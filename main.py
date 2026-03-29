@@ -741,16 +741,24 @@ def run_agent(
     )
 
     # Build agent
-    prompt = _render_system_prompt(initial_vars)
+    system_prompt = _render_system_prompt(initial_vars)
     checkpointer = MemorySaver()
 
-    agent = create_react_agent(
-        llm,
-        tools=all_tools,
-        prompt=prompt,
-        checkpointer=checkpointer,
-        state_schema=AgentState,
-    )
+    # Compatible with both old (state_modifier) and new (prompt) langgraph versions
+    try:
+        agent = create_react_agent(
+            llm,
+            tools=all_tools,
+            prompt=system_prompt,
+            checkpointer=checkpointer,
+        )
+    except TypeError:
+        agent = create_react_agent(
+            llm,
+            tools=all_tools,
+            state_modifier=system_prompt,
+            checkpointer=checkpointer,
+        )
 
     # Convert conversation to messages
     msgs = _to_messages(conversation_history, message)
@@ -763,8 +771,6 @@ def run_agent(
         state = agent.invoke(
             {
                 "messages": msgs,
-                "variables": initial_vars,
-                "is_last_step": False,
             },
             config={
                 "recursion_limit": 25,
@@ -774,7 +780,7 @@ def run_agent(
     except GraphRecursionError as ge:
         # Fallback to direct LLM call without tools
         try:
-            fallback_msgs = [SystemMessage(content=prompt)] + msgs
+            fallback_msgs = [SystemMessage(content=system_prompt)] + msgs
             fallback_resp = llm.invoke(fallback_msgs)
             reply_text = fallback_resp.content if hasattr(fallback_resp, "content") else str(fallback_resp)
         except Exception as le:
