@@ -705,6 +705,7 @@ def run_agent(
     conversation_history: List[Dict[str, Any]],
     message: str,
     variables: Optional[Dict[str, Any]] = None,
+    api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run the PartsWale agent.
@@ -713,14 +714,17 @@ def run_agent(
         conversation_history: Last N messages [{"role": "user"|"assistant", "content": "..."}]
         message: Current user message
         variables: Optional dict of known variables (user_name, phone, etc.)
+        api_key: OpenAI API key (passed from webhook body, falls back to env var)
 
     Returns:
         {"reply": "...", "variables": {...}}
     """
     global _CURRENT_AGENT_VARIABLES
 
-    if not OPENAI_API_KEY:
-        return {"reply": "Error: OPENAI_API_KEY not set.", "variables": {}}
+    # Prefer key from request body, fallback to env var
+    resolved_api_key = api_key or OPENAI_API_KEY
+    if not resolved_api_key:
+        return {"reply": "Error: OPENAI_API_KEY not provided in request or environment.", "variables": {}}
 
     # Initialize variables
     initial_vars = variables or {}
@@ -731,7 +735,7 @@ def run_agent(
 
     # Build LLM
     llm = ChatOpenAI(
-        api_key=OPENAI_API_KEY,
+        api_key=resolved_api_key,
         model=LLM_MODEL,
         temperature=0,
     )
@@ -838,7 +842,8 @@ async def run_endpoint(request: Request):
             "user_name": "Raju",
             "phone": "919876543210",
             "district": "Purnia"
-        }
+        },
+        "api_key": "sk-..."
     }
 
     Returns:
@@ -855,6 +860,7 @@ async def run_endpoint(request: Request):
     message = body.get("message", "")
     conversation = body.get("conversation", [])
     variables = body.get("variables", {})
+    api_key = body.get("api_key", "") or body.get("openai_api_key", "")
 
     if not message:
         return JSONResponse({"reply": "Error: No message provided", "variables": {}})
@@ -865,6 +871,7 @@ async def run_endpoint(request: Request):
         conversation,
         str(message),
         variables if isinstance(variables, dict) else {},
+        api_key if api_key else None,
     )
 
     return JSONResponse(result)
