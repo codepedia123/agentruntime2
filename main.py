@@ -564,46 +564,46 @@ def build_static_tools() -> List[StructuredTool]:
         # Create closure with captured variables
         def _make_tool_fn(_name: str, _url: str, _tpl: dict):
             def tool_fn(**kwargs) -> str:
-    payload = dict(kwargs or {})
-    event_id = str(uuid.uuid4())
+                payload = dict(kwargs or {})
+                event_id = str(uuid.uuid4())
 
-    print(f"[TOOL CALL] {_name} -> {_url}")
-    print(f"[TOOL PAYLOAD] {json.dumps(payload, ensure_ascii=False)}")
+                print(f"[TOOL CALL] {_name} -> {_url}")
+                print(f"[TOOL PAYLOAD] {json.dumps(payload, ensure_ascii=False)}")
 
-    if not _is_valid_api_url(_url):
-        print(f"[TOOL ERROR] Invalid URL: {_url}")
-        return json.dumps({
-            "ok": False,
-            "error": "Invalid API URL configured",
-            "event_id": event_id,
-        })
+                if not _is_valid_api_url(_url):
+                    print(f"[TOOL ERROR] Invalid URL: {_url}")
+                    return json.dumps({
+                        "ok": False,
+                        "error": "Invalid API URL configured",
+                        "event_id": event_id,
+                    })
 
-    # Inject current variables as context
-    global _CURRENT_AGENT_VARIABLES
-    payload["context_variables"] = dict(_CURRENT_AGENT_VARIABLES)
+                # Inject current variables as context
+                global _CURRENT_AGENT_VARIABLES
+                payload["context_variables"] = dict(_CURRENT_AGENT_VARIABLES)
 
-    try:
-        resp = requests.post(_url, json=payload, timeout=20)
-        print(f"[TOOL RESPONSE] status={resp.status_code} body={resp.text[:500]}")
-        try:
-            response_data = resp.json()
-        except Exception:
-            response_data = resp.text
+                try:
+                    resp = requests.post(_url, json=payload, timeout=20)
+                    print(f"[TOOL RESPONSE] status={resp.status_code} body={resp.text[:500]}")
+                    try:
+                        response_data = resp.json()
+                    except Exception:
+                        response_data = resp.text
 
-        return json.dumps({
-            "ok": bool(resp.ok),
-            "status_code": resp.status_code,
-            "response": response_data,
-            "event_id": event_id,
-        }, ensure_ascii=False)
+                    return json.dumps({
+                        "ok": bool(resp.ok),
+                        "status_code": resp.status_code,
+                        "response": response_data,
+                        "event_id": event_id,
+                    }, ensure_ascii=False)
 
-    except Exception as e:
-        print(f"[TOOL ERROR] {str(e)}")
-        return json.dumps({
-            "ok": False,
-            "error": str(e),
-            "event_id": event_id,
-        }))
+                except Exception as e:
+                    print(f"[TOOL ERROR] {str(e)}")
+                    return json.dumps({
+                        "ok": False,
+                        "error": str(e),
+                        "event_id": event_id,
+                    })
 
             return tool_fn
 
