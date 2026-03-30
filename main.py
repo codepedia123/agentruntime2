@@ -469,6 +469,21 @@ STATIC_TOOLS: List[Dict[str, Any]] = [
     ),
     "when_run": "When user clicks Confirm on the final confirmation prompt and the request should be posted to dealers.",
 },
+    {
+    "name": "fetch_request_history",
+    "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/requests-history",
+    "payload_template": {
+        "id": "",
+    },
+    "instructions": (
+        "Use this tool to fetch the user's previous part requests. "
+        "The 'id' field is the mechanic_id from CURRENT AGENT VARIABLES. "
+        "Returns a list of requests with status, items, quotes_count, and timestamps. "
+        "Show each request's items, status, and quotes count to the user. "
+        "Do not invent or summarize data that is not in the response."
+    ),
+    "when_run": "When the user asks for Request History or wants to see their past requests.",
+}
 ]
 
 
