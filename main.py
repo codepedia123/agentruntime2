@@ -453,84 +453,22 @@ TOOL USAGE RULES:
 
 STATIC_TOOLS: List[Dict[str, Any]] = [
     {
-        "name": "create_part_request",
-        "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/partswale-create-request",
-        "payload_template": {
-            "phone": "",
-            "user_name": "",
-            "parts": [],
-        },
-        "instructions": (
-            "Use this tool to post a new spare part request to nearby dealers. "
-            "Only call this AFTER the user has confirmed their request with all required fields. "
-            "The 'parts' field should be a JSON array of objects, each with: "
-            "part_name, brand, model, year, quantity, and optionally variant."
-        ),
-        "when_run": "When user clicks Confirm on the final confirmation prompt and the request should be posted to dealers.",
+    "name": "create_part_request",
+    "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/create-request",
+    "payload_template": {
+        "mechanic_id": "",
+        "district": "",
+        "request": "",
     },
-    {
-        "name": "fetch_request_history",
-        "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/partswale-request-history",
-        "payload_template": {
-            "phone": "",
-        },
-        "instructions": (
-            "Use this tool to fetch the user's previous part requests. "
-            "Returns a list of requests with their status."
-        ),
-        "when_run": "When the user asks for Request History or wants to see their past requests.",
-    },
-    {
-        "name": "fetch_quotes",
-        "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/partswale-fetch-quotes",
-        "payload_template": {
-            "phone": "",
-            "request_id": "",
-        },
-        "instructions": (
-            "Use this tool to fetch dealer quotes for a specific request. "
-            "Returns available quotes with dealer info and pricing."
-        ),
-        "when_run": "When the user asks about quotes on a specific request.",
-    },
-    {
-        "name": "place_order",
-        "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/partswale-place-order",
-        "payload_template": {
-            "phone": "",
-            "request_id": "",
-            "quote_id": "",
-        },
-        "instructions": (
-            "Use this tool to place an order based on a selected quote. "
-            "Only call after user confirms the order."
-        ),
-        "when_run": "When user confirms an order from a selected quote.",
-    },
-    {
-        "name": "fetch_order_history",
-        "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/partswale-order-history",
-        "payload_template": {
-            "phone": "",
-        },
-        "instructions": (
-            "Use this tool to fetch the user's order history. "
-            "Returns list of orders with status."
-        ),
-        "when_run": "When the user asks for Order History.",
-    },
-    {
-        "name": "fetch_order_status",
-        "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/partswale-order-status",
-        "payload_template": {
-            "phone": "",
-            "order_id": "",
-        },
-        "instructions": (
-            "Use this tool to check the current status of a specific order."
-        ),
-        "when_run": "When the user asks to track or check status of a specific order.",
-    },
+    "instructions": (
+        "Use this tool to post a new spare part request to nearby dealers. "
+        "Only call this AFTER the user has confirmed their request on the final confirmation prompt. "
+        "The 'request' field should be a plain text summary of all parts with their details "
+        "in this format: 'Part Name: X Company: Y Model: Z Year: W Qty: N'. "
+        "Get mechanic_id and district from CURRENT AGENT VARIABLES."
+    ),
+    "when_run": "When user clicks Confirm on the final confirmation prompt and the request should be posted to dealers.",
+},
 ]
 
 
