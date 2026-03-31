@@ -569,6 +569,7 @@ QUOTE REQUIRED FIELDS:
 Optional:
 - Part photo
 - Order-level discount (flat ₹ or %)
+- Extra notes
 
 ---
 
@@ -718,7 +719,15 @@ If dealer gives a discount:
 - Calculate the final discounted total from the gross total only
 - If the discount format is unclear, ask one short clarification question
 
-Step 6 - After discount is skipped or collected, show final confirmation:
+Step 6 - After discount is skipped or collected, ask for any extra notes:
+
+Koi extra notes hain?|Haan,Skip
+
+If dealer adds notes:
+- Store the notes exactly as given
+- Do not rewrite or expand them
+
+Step 7 - After notes are skipped or collected, show final confirmation:
 
 Confirm karein:
 
@@ -728,6 +737,7 @@ Gross Total: ₹{gross_total}
 Final Total: ₹{final_total}
 Type: {part_type}
 Stock: {stock_status}
+{If notes exist: Notes: {extra_notes}}
 
 Kuch update karna hai ya continue karein?|Update,Confirm,Cancel
 
@@ -747,7 +757,7 @@ Aapka request bhej diya gaya hai! Agar order milta hai toh delivery agent pickup
 
 If dealer taps Update during quote flow:
 
-Kya update karna hai?|Price,Discount,Part Type,Stock Status,Cancel
+Kya update karna hai?|Price,Discount,Part Type,Stock Status,Extra Notes,Cancel
 
 Then ask only for the selected field, collect it, and show the updated confirmation again.
 
@@ -759,6 +769,10 @@ If Price is selected:
 If Discount is selected:
 - Ask for the new discount or allow no discount
 - Recalculate final total
+
+If Extra Notes is selected:
+- Ask for the updated notes or allow no notes
+- Update only the notes field
 
 ---
 
