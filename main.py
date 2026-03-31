@@ -1092,18 +1092,27 @@ TOOL USAGE RULES:
 
 SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
     {
-        "name": "secondary_agent_placeholder_tool",
-        "api_url": "https://example.com/webhook/secondary-agent-placeholder",
-        "payload_template": {
-            "user_id": "",
-            "message": "",
-        },
-        "instructions": (
-            "Placeholder tool for the port-8002 agent. Replace this with the real webhook, "
-            "payload schema, and execution rules for the second agent."
-        ),
-        "when_run": "Only for placeholder setup. Replace with the actual run conditions for the second agent.",
-    }
+    "name": "submit_quote",
+    "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/submit-quote",
+    "payload_template": {
+        "request_id": "",
+        "dealer_id": "",
+        "dealer_rating": "",
+        "district": "",
+        "notes": "",
+        "quote_details": [],
+    },
+    "instructions": (
+        "Use this tool to submit a dealer's quote for a part request. "
+        "Only call this AFTER the dealer has confirmed their quote with all required fields. "
+        "The 'quote_details' field should be a JSON array of objects, each with: "
+        "part_name, company, model, year, quantity, price, part_type (Genuine/OEM/1st Copy/2nd Copy), "
+        "and stock_status (Available/Arrange Karna Padega). "
+        "Get dealer_id, dealer_rating, and district from CURRENT AGENT VARIABLES. "
+        "Get request_id from the incoming request broadcast data."
+    ),
+    "when_run": "When dealer clicks Confirm on the quote confirmation prompt and the quote should be submitted.",
+},
 ]
 
 
