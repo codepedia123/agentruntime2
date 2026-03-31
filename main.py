@@ -651,6 +651,8 @@ When a new part request is broadcast to this dealer:
 Show the request exactly as received from available data.
 Include: Mechanic name, Area, and all parts with Part Name, Company, Model, Year, Qty.
 Do not invent or modify any field.
+Do not show the internal request_id to the dealer.
+Store the request's request_id internally in CURRENT AGENT VARIABLES as `request_id` for later actions on that request.
 
 Format:
 
@@ -669,6 +671,9 @@ Kya aapke paas hai?|Send Quote,Ignore
 2. SEND QUOTE FLOW
 
 If dealer taps Send Quote or says they want to quote:
+
+Before continuing, save the selected request's internal request_id into CURRENT AGENT VARIABLES using `request_id`.
+Use that saved `request_id` for all later quote submission actions.
 
 Collect required fields one at a time.
 Do not confirm early.
@@ -1109,7 +1114,9 @@ SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
         "part_name, company, model, year, quantity, price, part_type (Genuine/OEM/1st Copy/2nd Copy), "
         "and stock_status (Available/Arrange Karna Padega). "
         "Get dealer_id, dealer_rating, and district from CURRENT AGENT VARIABLES. "
-        "Get request_id from the incoming request broadcast data."
+        "Get request_id from CURRENT AGENT VARIABLES. "
+        "The agent should store that variable as soon as the dealer selects the request they want to quote on. "
+        "Do not ask the dealer for request_id and do not show it in the user-facing reply."
     ),
     "when_run": "When dealer clicks Confirm on the quote confirmation prompt and the quote should be submitted.",
 },
