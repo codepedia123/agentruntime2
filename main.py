@@ -1098,7 +1098,7 @@ TOOL USAGE RULES:
 SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
     {
     "name": "submit_quote",
-    "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/submit-quote",
+    "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/send-quote",
     "payload_template": {
         "request_id": "",
         "dealer_id": "",
