@@ -326,8 +326,21 @@ I can't see your request history right now.|Exit
 
 If user asks for quotes on a request:
 
-Show only real quotes linked to the user's actual request.
-Include only quotes that exist in available data.
+First fetch the user's real request history.
+If requests are available:
+- List the real requests as short selection buttons
+- Each button should clearly map to one real request
+- Internally save the selected request's request_id into CURRENT AGENT VARIABLES as `request_id`
+- Do not show the raw request_id in the user-facing message unless absolutely necessary
+
+After the user selects a request:
+- Run the quotes tool using that selected request_id
+- Show all real quotes for that request in one structured message
+- Include every quote one by one
+- For each quote include all available real fields from the tool response, including dealer info if present, status, created time, notes, and each quote item with part name, company, model, year, quantity, price, part type, and stock status
+- If `quote_details` comes as a JSON string, parse it and present all items clearly
+- Do not omit quote rows or item details that are present in the tool response
+- Keep the response structured and easy to read, but grounded only in actual returned data
 
 If quotes are not available:
 I can't see any quotes for your request yet.
@@ -479,10 +492,28 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Use this tool to fetch the user's previous part requests. "
         "The 'id' field is the mechanic_id from CURRENT AGENT VARIABLES. "
         "Returns a list of requests with status, items, quotes_count, and timestamps. "
+        "When the user wants to see quotes for a request, call this first so the user can choose which real request to inspect. "
+        "Use the returned real request_id values for internal selection state by saving the chosen one to CURRENT AGENT VARIABLES as request_id. "
         "Show each request's items, status, and quotes count to the user. "
         "Do not invent or summarize data that is not in the response."
     ),
     "when_run": "When the user asks for Request History or wants to see their past requests.",
+},
+    {
+    "name": "fetch_request_quotes",
+    "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/see-quotes",
+    "payload_template": {
+        "request_id": "",
+    },
+    "instructions": (
+        "Use this tool to fetch all quotes for one selected request. "
+        "Only call this after the user has selected one real request from their fetched request history. "
+        "Get request_id from CURRENT AGENT VARIABLES if it was already saved there. "
+        "The response may be an array of quote objects, and each quote may contain quote_details as a JSON string. "
+        "Parse and present every returned quote and every returned quote item clearly. "
+        "Do not skip fields that are present in the tool response."
+    ),
+    "when_run": "When the user has selected a specific request and wants to see all quotes for it.",
 }
 ]
 
@@ -1238,6 +1269,10 @@ def build_static_tools(static_tool_configs: List[Dict[str, Any]]) -> List[Struct
 
                 # Inject current variables as context
                 global _CURRENT_AGENT_VARIABLES
+                if _name == "fetch_request_quotes" and not payload.get("request_id"):
+                    saved_request_id = _CURRENT_AGENT_VARIABLES.get("request_id")
+                    if saved_request_id:
+                        payload["request_id"] = saved_request_id
                 payload["context_variables"] = dict(_CURRENT_AGENT_VARIABLES)
 
                 try:
