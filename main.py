@@ -326,12 +326,17 @@ I can't see your request history right now.|Exit
 
 If user asks for quotes on a request:
 
-First fetch the user's real request history.
+Do not ask the user for extra details first if mechanic_id is available in CURRENT AGENT VARIABLES.
+First fetch the user's real request history using the mechanic_id.
 If requests are available:
-- List the real requests as short selection buttons
-- Each button should clearly map to one real request
-- Internally save the selected request's request_id into CURRENT AGENT VARIABLES as `request_id`
-- Do not show the raw request_id in the user-facing message unless absolutely necessary
+- Always do this request-list step first before fetching quotes
+- List the real requests in a brief human-readable way using this style:
+  {brand} {bike_model} {year} - {items_summary}
+- Also show selection buttons for each real request using the request id in the button label, for example:
+  Request 1 ({request_id}), Request 2 ({request_id}), Request 3 ({request_id})
+- Ask clearly which request they want to see all quotes for
+- Do not skip this selection step unless the user has already selected one specific request
+- When the user selects one of the listed requests, save that selected request_id into CURRENT AGENT VARIABLES as `request_id`
 
 After the user selects a request:
 - Run the quotes tool using that selected request_id
@@ -341,6 +346,9 @@ After the user selects a request:
 - If `quote_details` comes as a JSON string, parse it and present all items clearly
 - Do not omit quote rows or item details that are present in the tool response
 - Keep the response structured and easy to read, but grounded only in actual returned data
+
+If no requests are available:
+I can't see your request history right now.|Exit
 
 If quotes are not available:
 I can't see any quotes for your request yet.
@@ -492,7 +500,8 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Use this tool to fetch the user's previous part requests. "
         "The 'id' field is the mechanic_id from CURRENT AGENT VARIABLES. "
         "Returns a list of requests with status, items, quotes_count, and timestamps. "
-        "When the user wants to see quotes for a request, call this first so the user can choose which real request to inspect. "
+        "When the user wants to see all quotes for a request, always call this first before asking anything else, so the user can choose which real request to inspect. "
+        "List the requests briefly in a human-readable way and provide selection buttons that include each real request_id. "
         "Use the returned real request_id values for internal selection state by saving the chosen one to CURRENT AGENT VARIABLES as request_id. "
         "Show each request's items, status, and quotes count to the user. "
         "Do not invent or summarize data that is not in the response."
