@@ -1512,6 +1512,37 @@ def _build_context_payload(
     }
 
 
+def _extract_usage_from_ai_message(message: Optional[BaseMessage]) -> Dict[str, int]:
+    if not isinstance(message, AIMessage):
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    usage_metadata = getattr(message, "usage_metadata", None)
+    if isinstance(usage_metadata, dict):
+        input_tokens = int(usage_metadata.get("input_tokens", 0) or 0)
+        output_tokens = int(usage_metadata.get("output_tokens", 0) or 0)
+        total_tokens = int(usage_metadata.get("total_tokens", input_tokens + output_tokens) or 0)
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+        }
+
+    response_metadata = getattr(message, "response_metadata", None)
+    if isinstance(response_metadata, dict):
+        token_usage = response_metadata.get("token_usage", {})
+        if isinstance(token_usage, dict):
+            input_tokens = int(token_usage.get("prompt_tokens", 0) or 0)
+            output_tokens = int(token_usage.get("completion_tokens", 0) or 0)
+            total_tokens = int(token_usage.get("total_tokens", input_tokens + output_tokens) or 0)
+            return {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+            }
+
+    return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+
 def _resolve_api_key(body: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Optional[str]:
     if isinstance(body.get("api_key"), str) and body.get("api_key"):
         return body.get("api_key")
@@ -1626,7 +1657,11 @@ def run_agent(
             messages=msgs + [AIMessage(content=reply_text)],
             thread_id=thread_id,
         )
-        return {"reply": reply_text, "context": fallback_context}
+        return {
+            "reply": reply_text,
+            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            "context": fallback_context,
+        }
     except Exception as e:
         error_reply = f"Error: {str(e)}"
         error_context = _build_context_payload(
@@ -1634,21 +1669,28 @@ def run_agent(
             messages=msgs + [AIMessage(content=error_reply)],
             thread_id=thread_id,
         )
-        return {"reply": error_reply, "context": error_context}
+        return {
+            "reply": error_reply,
+            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            "context": error_context,
+        }
 
     # Extract last AI message
     reply_text = ""
     out_msgs: List[BaseMessage] = []
     try:
         out_msgs = state.get("messages", []) if isinstance(state, dict) else []
+        last_ai_message: Optional[AIMessage] = None
         for m in reversed(out_msgs):
             if isinstance(m, AIMessage):
+                last_ai_message = m
                 reply_text = _safe_content_to_str(m.content).strip()
                 break
         if not reply_text:
             reply_text = "Done."
     except Exception:
         reply_text = "Done."
+        last_ai_message = None
 
     # Collect final variables
     final_vars = dict(initial_vars)
@@ -1666,7 +1708,11 @@ def run_agent(
         thread_id=thread_id,
     )
 
-    return {"reply": reply_text, "context": final_context}
+    return {
+        "reply": reply_text,
+        "usage": _extract_usage_from_ai_message(last_ai_message),
+        "context": final_context,
+    }
 
 
 # ============================================================
