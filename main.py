@@ -24,7 +24,6 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from langgraph.prebuilt import create_react_agent
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import MessagesState
 
 from langchain_core.tools import StructuredTool
@@ -1490,13 +1489,19 @@ def _to_messages(
 # ============================================================
 # CORE AGENT RUNNER
 # ============================================================
-def _render_system_prompt(current_vars: Dict[str, Any]) -> str:
+def _render_system_prompt() -> str:
     active_config = get_active_agent_config()
+    return active_config["system_prompt"]
+
+
+def _build_runtime_context_message(current_vars: Dict[str, Any]) -> Optional[HumanMessage]:
+    if not current_vars:
+        return None
     try:
         vars_str = json.dumps(current_vars, ensure_ascii=False)
     except Exception:
         vars_str = str(current_vars)
-    return f"{active_config['system_prompt']}\n\nCURRENT AGENT VARIABLES:\n{vars_str}"
+    return HumanMessage(content=f"CURRENT AGENT VARIABLES:\n{vars_str}")
 
 
 def _build_context_payload(
@@ -1576,7 +1581,7 @@ def run_agent(
         api_key: OpenAI API key (passed from webhook body, falls back to env var)
 
     Returns:
-        {"reply": "...", "variables": {...}, "context": {...}}
+        {"reply": "...", "context": {...}}
     """
     global _CURRENT_AGENT_VARIABLES
     active_config = get_active_agent_config()
@@ -1605,11 +1610,13 @@ def run_agent(
         api_key=resolved_api_key,
         model=LLM_MODEL,
         temperature=0,
+        model_kwargs={
+            "prompt_cache_key": f"partswale-{active_config['agent_key']}",
+        },
     )
 
     # Build agent
-    system_prompt = _render_system_prompt(initial_vars)
-    checkpointer = MemorySaver()
+    system_prompt = _render_system_prompt()
 
     # Compatible with both old (state_modifier) and new (prompt) langgraph versions
     try:
@@ -1617,21 +1624,20 @@ def run_agent(
             llm,
             tools=all_tools,
             prompt=system_prompt,
-            checkpointer=checkpointer,
         )
     except TypeError:
         agent = create_react_agent(
             llm,
             tools=all_tools,
             state_modifier=system_prompt,
-            checkpointer=checkpointer,
         )
 
     # Convert conversation to messages
     msgs = _to_messages(context, conversation_history, message)
+    runtime_context_msg = _build_runtime_context_message(initial_vars)
+    if runtime_context_msg is not None:
+        msgs = [runtime_context_msg] + msgs
 
-    # Create a unique thread_id per invocation (stateless per call,
-    # since n8n manages conversation history externally)
     thread_id = str(context.get("thread_id") or uuid.uuid4())
 
     try:
@@ -1641,7 +1647,6 @@ def run_agent(
             },
             config={
                 "recursion_limit": 25,
-                "configurable": {"thread_id": thread_id},
             },
         )
     except GraphRecursionError as ge:
