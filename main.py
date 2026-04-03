@@ -1433,38 +1433,29 @@ def _messages_from_context(context_messages: Any) -> List[BaseMessage]:
 
 
 def _messages_to_context(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
-    if messages_to_dict is not None:
-        try:
-            return list(messages_to_dict(messages))
-        except Exception:
-            pass
-
     serialized: List[Dict[str, Any]] = []
     for msg in messages or []:
-        base: Dict[str, Any] = {
-            "role": getattr(msg, "type", msg.__class__.__name__.replace("Message", "").lower()),
+        msg_type = getattr(msg, "type", msg.__class__.__name__.replace("Message", "").lower())
+        data: Dict[str, Any] = {
             "content": msg.content,
         }
         if getattr(msg, "id", None) is not None:
-            base["id"] = msg.id
+            data["id"] = msg.id
         if getattr(msg, "name", None) is not None:
-            base["name"] = msg.name
-        if getattr(msg, "additional_kwargs", None):
-            base["additional_kwargs"] = msg.additional_kwargs
-        if getattr(msg, "response_metadata", None):
-            base["response_metadata"] = msg.response_metadata
+            data["name"] = msg.name
         if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-            base["tool_calls"] = msg.tool_calls
+            data["tool_calls"] = msg.tool_calls
         if isinstance(msg, AIMessage) and getattr(msg, "invalid_tool_calls", None):
-            base["invalid_tool_calls"] = msg.invalid_tool_calls
+            data["invalid_tool_calls"] = msg.invalid_tool_calls
         if isinstance(msg, ToolMessage):
             if getattr(msg, "tool_call_id", None) is not None:
-                base["tool_call_id"] = msg.tool_call_id
-            if getattr(msg, "artifact", None) is not None:
-                base["artifact"] = msg.artifact
+                data["tool_call_id"] = msg.tool_call_id
             if getattr(msg, "status", None) is not None:
-                base["status"] = msg.status
-        serialized.append(base)
+                data["status"] = msg.status
+        serialized.append({
+            "type": msg_type,
+            "data": data,
+        })
     return serialized
 
 
@@ -1564,7 +1555,6 @@ def run_agent(
     if not resolved_api_key:
         return {
             "reply": "Error: OPENAI_API_KEY not provided in request or environment.",
-            "variables": {},
             "context": _build_context_payload(variables={}, messages=[], thread_id=str(uuid.uuid4())),
         }
 
@@ -1636,7 +1626,7 @@ def run_agent(
             messages=msgs + [AIMessage(content=reply_text)],
             thread_id=thread_id,
         )
-        return {"reply": reply_text, "variables": dict(_CURRENT_AGENT_VARIABLES), "context": fallback_context}
+        return {"reply": reply_text, "context": fallback_context}
     except Exception as e:
         error_reply = f"Error: {str(e)}"
         error_context = _build_context_payload(
@@ -1644,7 +1634,7 @@ def run_agent(
             messages=msgs + [AIMessage(content=error_reply)],
             thread_id=thread_id,
         )
-        return {"reply": error_reply, "variables": dict(_CURRENT_AGENT_VARIABLES), "context": error_context}
+        return {"reply": error_reply, "context": error_context}
 
     # Extract last AI message
     reply_text = ""
@@ -1676,7 +1666,7 @@ def run_agent(
         thread_id=thread_id,
     )
 
-    return {"reply": reply_text, "variables": final_vars, "context": final_context}
+    return {"reply": reply_text, "context": final_context}
 
 
 # ============================================================
@@ -1737,7 +1727,6 @@ async def run_endpoint(request: Request):
     Returns:
     {
         "reply": "agent response in body|button1,button2 format",
-        "variables": {"user_name": "Raju", ...},
         "context": {
             "thread_id": "stable-user-or-conversation-id",
             "variables": {...},
@@ -1748,7 +1737,7 @@ async def run_endpoint(request: Request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"reply": "Error: Invalid JSON body", "variables": {}, "context": {}})
+        return JSONResponse({"reply": "Error: Invalid JSON body", "context": {}})
 
     message = body.get("message", "")
     context = body.get("context", {})
@@ -1757,7 +1746,7 @@ async def run_endpoint(request: Request):
     api_key = _resolve_api_key(body, context if isinstance(context, dict) else {})
 
     if not message:
-        return JSONResponse({"reply": "Error: No message provided", "variables": {}, "context": context if isinstance(context, dict) else {}})
+        return JSONResponse({"reply": "Error: No message provided", "context": context if isinstance(context, dict) else {}})
 
     # Run agent in thread to not block event loop
     result = await asyncio.to_thread(
