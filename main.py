@@ -28,7 +28,18 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import MessagesState
 
 from langchain_core.tools import StructuredTool
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+    BaseMessage,
+)
+try:
+    from langchain_core.messages import messages_from_dict, messages_to_dict
+except ImportError:  # pragma: no cover - older langchain_core fallback
+    messages_from_dict = None
+    messages_to_dict = None
 from langchain_openai import ChatOpenAI
 
 from pydantic import create_model, Field, BaseModel, ConfigDict
@@ -1332,20 +1343,154 @@ def build_static_tools(static_tool_configs: List[Dict[str, Any]]) -> List[Struct
 # ============================================================
 # MESSAGE CONVERSION
 # ============================================================
-def _to_messages(conversation_history: List[Dict[str, Any]], user_message: str) -> List[Any]:
-    """Convert conversation history + current message into LangChain message objects."""
-    msgs: List[Any] = []
+def _safe_content_to_str(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    try:
+        return json.dumps(content, ensure_ascii=False)
+    except Exception:
+        return str(content)
+
+
+def _dict_to_message(message_dict: Dict[str, Any]) -> BaseMessage:
+    if "type" in message_dict and isinstance(message_dict.get("data"), dict):
+        msg_type = str(message_dict.get("type") or "").lower().strip()
+        data = dict(message_dict.get("data") or {})
+        role_map = {
+            "human": "user",
+            "ai": "assistant",
+            "system": "system",
+            "tool": "tool",
+        }
+        merged = dict(data)
+        merged["role"] = role_map.get(msg_type, data.get("role", msg_type))
+        return _dict_to_message(merged)
+
+    role = str(message_dict.get("role", "") or "").lower().strip()
+    content = message_dict.get("content", message_dict.get("message", ""))
+    kwargs = message_dict.get("additional_kwargs")
+    response_metadata = message_dict.get("response_metadata")
+    msg_id = message_dict.get("id")
+    name = message_dict.get("name")
+
+    common: Dict[str, Any] = {
+        "content": content if content is not None else "",
+    }
+    if kwargs is not None:
+        common["additional_kwargs"] = kwargs
+    if response_metadata is not None:
+        common["response_metadata"] = response_metadata
+    if msg_id is not None:
+        common["id"] = msg_id
+    if name is not None:
+        common["name"] = name
+
+    if role in ("user", "human"):
+        return HumanMessage(**common)
+    if role in ("assistant", "ai"):
+        tool_calls = message_dict.get("tool_calls")
+        invalid_tool_calls = message_dict.get("invalid_tool_calls")
+        if tool_calls is not None:
+            common["tool_calls"] = tool_calls
+        if invalid_tool_calls is not None:
+            common["invalid_tool_calls"] = invalid_tool_calls
+        return AIMessage(**common)
+    if role == "system":
+        return SystemMessage(**common)
+    if role == "tool":
+        tool_call_id = message_dict.get("tool_call_id")
+        if tool_call_id is not None:
+            common["tool_call_id"] = tool_call_id
+        artifact = message_dict.get("artifact")
+        status = message_dict.get("status")
+        if artifact is not None:
+            common["artifact"] = artifact
+        if status is not None:
+            common["status"] = status
+        return ToolMessage(**common)
+    return HumanMessage(content=_safe_content_to_str(content))
+
+
+def _messages_from_context(context_messages: Any) -> List[BaseMessage]:
+    if not isinstance(context_messages, list) or not context_messages:
+        return []
+
+    if messages_from_dict is not None:
+        try:
+            return list(messages_from_dict(context_messages))
+        except Exception:
+            pass
+
+    parsed: List[BaseMessage] = []
+    for item in context_messages:
+        if isinstance(item, BaseMessage):
+            parsed.append(item)
+        elif isinstance(item, dict):
+            parsed.append(_dict_to_message(item))
+    return parsed
+
+
+def _messages_to_context(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
+    if messages_to_dict is not None:
+        try:
+            return list(messages_to_dict(messages))
+        except Exception:
+            pass
+
+    serialized: List[Dict[str, Any]] = []
+    for msg in messages or []:
+        base: Dict[str, Any] = {
+            "role": getattr(msg, "type", msg.__class__.__name__.replace("Message", "").lower()),
+            "content": msg.content,
+        }
+        if getattr(msg, "id", None) is not None:
+            base["id"] = msg.id
+        if getattr(msg, "name", None) is not None:
+            base["name"] = msg.name
+        if getattr(msg, "additional_kwargs", None):
+            base["additional_kwargs"] = msg.additional_kwargs
+        if getattr(msg, "response_metadata", None):
+            base["response_metadata"] = msg.response_metadata
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            base["tool_calls"] = msg.tool_calls
+        if isinstance(msg, AIMessage) and getattr(msg, "invalid_tool_calls", None):
+            base["invalid_tool_calls"] = msg.invalid_tool_calls
+        if isinstance(msg, ToolMessage):
+            if getattr(msg, "tool_call_id", None) is not None:
+                base["tool_call_id"] = msg.tool_call_id
+            if getattr(msg, "artifact", None) is not None:
+                base["artifact"] = msg.artifact
+            if getattr(msg, "status", None) is not None:
+                base["status"] = msg.status
+        serialized.append(base)
+    return serialized
+
+
+def _legacy_conversation_to_messages(conversation_history: List[Dict[str, Any]]) -> List[BaseMessage]:
+    msgs: List[BaseMessage] = []
     for turn in (conversation_history or []):
-        role = str(turn.get("role", "") or "").lower().strip()
-        content = turn.get("content") if "content" in turn else turn.get("message", "")
-        if content is None:
-            content = ""
-        if role == "user":
-            msgs.append(HumanMessage(content=str(content)))
-        elif role == "assistant":
-            msgs.append(AIMessage(content=str(content)))
-        else:
-            msgs.append(HumanMessage(content=str(content)))
+        if isinstance(turn, dict) and turn.get("type") and messages_from_dict is not None:
+            try:
+                msgs.extend(messages_from_dict([turn]))
+                continue
+            except Exception:
+                pass
+        if isinstance(turn, dict):
+            msgs.append(_dict_to_message(turn))
+    return msgs
+
+
+def _to_messages(
+    context: Optional[Dict[str, Any]],
+    conversation_history: List[Dict[str, Any]],
+    user_message: str,
+) -> List[BaseMessage]:
+    """Build LangChain messages from structured context, with legacy conversation fallback."""
+    msgs = _messages_from_context((context or {}).get("messages"))
+    if not msgs:
+        msgs = _legacy_conversation_to_messages(conversation_history)
     if user_message is not None:
         msgs.append(HumanMessage(content=str(user_message)))
     return msgs
@@ -1363,7 +1508,21 @@ def _render_system_prompt(current_vars: Dict[str, Any]) -> str:
     return f"{active_config['system_prompt']}\n\nCURRENT AGENT VARIABLES:\n{vars_str}"
 
 
+def _build_context_payload(
+    *,
+    variables: Dict[str, Any],
+    messages: List[BaseMessage],
+    thread_id: str,
+) -> Dict[str, Any]:
+    return {
+        "thread_id": thread_id,
+        "variables": variables,
+        "messages": _messages_to_context(messages),
+    }
+
+
 def run_agent(
+    context: Optional[Dict[str, Any]],
     conversation_history: List[Dict[str, Any]],
     message: str,
     variables: Optional[Dict[str, Any]] = None,
@@ -1373,13 +1532,14 @@ def run_agent(
     Run the active agent for the current port.
 
     Args:
+        context: Structured conversation context with variables, messages, and thread_id
         conversation_history: Last N messages [{"role": "user"|"assistant", "content": "..."}]
         message: Current user message
         variables: Optional dict of known variables (user_name, phone, etc.)
         api_key: OpenAI API key (passed from webhook body, falls back to env var)
 
     Returns:
-        {"reply": "...", "variables": {...}}
+        {"reply": "...", "variables": {...}, "context": {...}}
     """
     global _CURRENT_AGENT_VARIABLES
     active_config = get_active_agent_config()
@@ -1387,10 +1547,18 @@ def run_agent(
     # Prefer key from request body, fallback to env var
     resolved_api_key = api_key or OPENAI_API_KEY
     if not resolved_api_key:
-        return {"reply": "Error: OPENAI_API_KEY not provided in request or environment.", "variables": {}}
+        return {
+            "reply": "Error: OPENAI_API_KEY not provided in request or environment.",
+            "variables": {},
+            "context": _build_context_payload(variables={}, messages=[], thread_id=str(uuid.uuid4())),
+        }
 
     # Initialize variables
-    initial_vars = variables or {}
+    context = context or {}
+    context_vars = context.get("variables", {}) if isinstance(context.get("variables"), dict) else {}
+    initial_vars = dict(context_vars)
+    if isinstance(variables, dict):
+        initial_vars.update(variables)
     _CURRENT_AGENT_VARIABLES = dict(initial_vars)
 
     # Build tools
@@ -1424,11 +1592,11 @@ def run_agent(
         )
 
     # Convert conversation to messages
-    msgs = _to_messages(conversation_history, message)
+    msgs = _to_messages(context, conversation_history, message)
 
     # Create a unique thread_id per invocation (stateless per call,
     # since n8n manages conversation history externally)
-    thread_id = str(uuid.uuid4())
+    thread_id = str(context.get("thread_id") or uuid.uuid4())
 
     try:
         state = agent.invoke(
@@ -1448,17 +1616,29 @@ def run_agent(
             reply_text = fallback_resp.content if hasattr(fallback_resp, "content") else str(fallback_resp)
         except Exception as le:
             reply_text = f"Error: {str(ge)}"
-        return {"reply": reply_text, "variables": dict(_CURRENT_AGENT_VARIABLES)}
+        fallback_context = _build_context_payload(
+            variables=dict(_CURRENT_AGENT_VARIABLES),
+            messages=msgs + [AIMessage(content=reply_text)],
+            thread_id=thread_id,
+        )
+        return {"reply": reply_text, "variables": dict(_CURRENT_AGENT_VARIABLES), "context": fallback_context}
     except Exception as e:
-        return {"reply": f"Error: {str(e)}", "variables": dict(_CURRENT_AGENT_VARIABLES)}
+        error_reply = f"Error: {str(e)}"
+        error_context = _build_context_payload(
+            variables=dict(_CURRENT_AGENT_VARIABLES),
+            messages=msgs + [AIMessage(content=error_reply)],
+            thread_id=thread_id,
+        )
+        return {"reply": error_reply, "variables": dict(_CURRENT_AGENT_VARIABLES), "context": error_context}
 
     # Extract last AI message
     reply_text = ""
+    out_msgs: List[BaseMessage] = []
     try:
         out_msgs = state.get("messages", []) if isinstance(state, dict) else []
         for m in reversed(out_msgs):
             if isinstance(m, AIMessage):
-                reply_text = m.content.strip() if isinstance(m.content, str) else str(m.content)
+                reply_text = _safe_content_to_str(m.content).strip()
                 break
         if not reply_text:
             reply_text = "Done."
@@ -1474,7 +1654,14 @@ def run_agent(
         pass
     final_vars.update(_CURRENT_AGENT_VARIABLES)
 
-    return {"reply": reply_text, "variables": final_vars}
+    final_messages = out_msgs if isinstance(out_msgs, list) and out_msgs else msgs + [AIMessage(content=reply_text)]
+    final_context = _build_context_payload(
+        variables=final_vars,
+        messages=final_messages,
+        thread_id=thread_id,
+    )
+
+    return {"reply": reply_text, "variables": final_vars, "context": final_context}
 
 
 # ============================================================
@@ -1505,6 +1692,18 @@ async def run_endpoint(request: Request):
     Expected JSON body from n8n:
     {
         "message": "user's current message text",
+        "context": {
+            "thread_id": "stable-user-or-conversation-id",
+            "variables": {
+                "user_name": "Raju",
+                "phone": "919876543210",
+                "district": "Purnia"
+            },
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi"}
+            ]
+        },
         "conversation": [
             {"role": "user", "content": "..."},
             {"role": "assistant", "content": "..."},
@@ -1521,25 +1720,32 @@ async def run_endpoint(request: Request):
     Returns:
     {
         "reply": "agent response in body|button1,button2 format",
-        "variables": {"user_name": "Raju", ...}
+        "variables": {"user_name": "Raju", ...},
+        "context": {
+            "thread_id": "stable-user-or-conversation-id",
+            "variables": {...},
+            "messages": [...]
+        }
     }
     """
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"reply": "Error: Invalid JSON body", "variables": {}})
+        return JSONResponse({"reply": "Error: Invalid JSON body", "variables": {}, "context": {}})
 
     message = body.get("message", "")
+    context = body.get("context", {})
     conversation = body.get("conversation", [])
     variables = body.get("variables", {})
     api_key = body.get("api_key", "") or body.get("openai_api_key", "")
 
     if not message:
-        return JSONResponse({"reply": "Error: No message provided", "variables": {}})
+        return JSONResponse({"reply": "Error: No message provided", "variables": {}, "context": context if isinstance(context, dict) else {}})
 
     # Run agent in thread to not block event loop
     result = await asyncio.to_thread(
         run_agent,
+        context if isinstance(context, dict) else {},
         conversation,
         str(message),
         variables if isinstance(variables, dict) else {},
