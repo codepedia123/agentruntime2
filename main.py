@@ -1521,6 +1521,21 @@ def _build_context_payload(
     }
 
 
+def _resolve_api_key(body: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Optional[str]:
+    if isinstance(body.get("api_key"), str) and body.get("api_key"):
+        return body.get("api_key")
+    if isinstance(body.get("openai_api_key"), str) and body.get("openai_api_key"):
+        return body.get("openai_api_key")
+    if isinstance(context, dict):
+        if isinstance(context.get("api_key"), str) and context.get("api_key"):
+            return context.get("api_key")
+        if isinstance(context.get("openai_api_key"), str) and context.get("openai_api_key"):
+            return context.get("openai_api_key")
+    if OPENAI_API_KEY:
+        return OPENAI_API_KEY
+    return None
+
+
 def run_agent(
     context: Optional[Dict[str, Any]],
     conversation_history: List[Dict[str, Any]],
@@ -1692,8 +1707,10 @@ async def run_endpoint(request: Request):
     Expected JSON body from n8n:
     {
         "message": "user's current message text",
+        "api_key": "sk-...",
         "context": {
             "thread_id": "stable-user-or-conversation-id",
+            "api_key": "sk-...",
             "variables": {
                 "user_name": "Raju",
                 "phone": "919876543210",
@@ -1737,7 +1754,7 @@ async def run_endpoint(request: Request):
     context = body.get("context", {})
     conversation = body.get("conversation", [])
     variables = body.get("variables", {})
-    api_key = body.get("api_key", "") or body.get("openai_api_key", "")
+    api_key = _resolve_api_key(body, context if isinstance(context, dict) else {})
 
     if not message:
         return JSONResponse({"reply": "Error: No message provided", "variables": {}, "context": context if isinstance(context, dict) else {}})
