@@ -1507,6 +1507,14 @@ def _build_runtime_context_message(current_vars: Dict[str, Any]) -> Optional[Hum
     return HumanMessage(content=f"CURRENT AGENT VARIABLES:\n{vars_str}")
 
 
+def _is_runtime_context_message(message: BaseMessage) -> bool:
+    return isinstance(message, HumanMessage) and isinstance(message.content, str) and message.content.startswith("CURRENT AGENT VARIABLES:\n")
+
+
+def _strip_runtime_context_messages(messages: List[BaseMessage]) -> List[BaseMessage]:
+    return [message for message in (messages or []) if not _is_runtime_context_message(message)]
+
+
 def _build_context_payload(
     *,
     variables: Dict[str, Any],
@@ -1638,7 +1646,7 @@ def run_agent(
             reply_text = f"Error: {str(ge)}"
         fallback_context = _build_context_payload(
             variables=dict(_CURRENT_AGENT_VARIABLES),
-            messages=msgs + [AIMessage(content=reply_text)],
+            messages=_strip_runtime_context_messages(msgs + [AIMessage(content=reply_text)]),
             thread_id=thread_id,
         )
         return {
@@ -1649,7 +1657,7 @@ def run_agent(
         error_reply = f"Error: {str(e)}"
         error_context = _build_context_payload(
             variables=dict(_CURRENT_AGENT_VARIABLES),
-            messages=msgs + [AIMessage(content=error_reply)],
+            messages=_strip_runtime_context_messages(msgs + [AIMessage(content=error_reply)]),
             thread_id=thread_id,
         )
         return {
@@ -1686,7 +1694,7 @@ def run_agent(
     final_messages = out_msgs if isinstance(out_msgs, list) and out_msgs else msgs + [AIMessage(content=reply_text)]
     final_context = _build_context_payload(
         variables=final_vars,
-        messages=final_messages,
+        messages=_strip_runtime_context_messages(final_messages),
         thread_id=thread_id,
     )
 
