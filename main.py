@@ -49,8 +49,11 @@ from langgraph.errors import GraphRecursionError
 # CONFIGURATION - Set these via environment variables
 # ============================================================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
 PORT = int(os.getenv("PORT", "8001"))
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+USE_GROQ = os.getenv("USE_GROQ", "true").lower() == "true"
 
 
 # ============================================================
@@ -1597,6 +1600,15 @@ def _extract_usage_from_ai_message(message: Optional[BaseMessage]) -> Dict[str, 
 
 
 def _resolve_api_key(body: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Optional[str]:
+    if USE_GROQ:
+        if isinstance(body.get("groq_api_key"), str) and body.get("groq_api_key"):
+            return body.get("groq_api_key")
+        if isinstance(context, dict):
+            if isinstance(context.get("groq_api_key"), str) and context.get("groq_api_key"):
+                return context.get("groq_api_key")
+        if GROQ_API_KEY:
+            return GROQ_API_KEY
+
     if isinstance(body.get("api_key"), str) and body.get("api_key"):
         return body.get("api_key")
     if isinstance(body.get("openai_api_key"), str) and body.get("openai_api_key"):
@@ -1638,7 +1650,7 @@ def run_agent(
     resolved_api_key = api_key or OPENAI_API_KEY
     if not resolved_api_key:
         return {
-            "reply": "Error: OPENAI_API_KEY not provided in request or environment.",
+            "reply": "Error: LLM API key not provided in request or environment.",
             "context": _build_context_payload(variables={}, messages=[], thread_id=str(uuid.uuid4())),
         }
 
@@ -1656,11 +1668,9 @@ def run_agent(
     # Build LLM
     llm = ChatOpenAI(
         api_key=resolved_api_key,
+        base_url=GROQ_BASE_URL if USE_GROQ else "https://api.openai.com/v1",
         model=LLM_MODEL,
         temperature=0,
-        model_kwargs={
-            "prompt_cache_key": f"partswale-{active_config['agent_key']}",
-        },
     )
 
     # Build agent
