@@ -115,6 +115,10 @@ CRITICAL RULES:
 2. MINIMUM QUESTIONS
 - Ask ONLY missing required fields
 - One question at a time
+- Ask for only one missing field in one reply
+- Never ask two missing fields together in the same message
+- Never output two question sentences or two question lines in the same reply
+- Never combine one question with another prompt in the same reply body
 
 3. MULTI-PART SUPPORT
 - If user mentions multiple parts, extract ALL
@@ -260,6 +264,11 @@ IF required fields missing:
 → If user gives only one missing field, store it and ask for the next missing required field
 → Never assume Year
 → Never assume Quantity, including 1
+→ The reply must contain exactly one missing-field question only
+→ Do not ask Year and Quantity together
+→ Do not ask Model and Year together
+→ Do not send one question followed by another question on the next line
+→ If buttons are used, they must belong only to that single question
 
 Example:
 "Which model?"
@@ -345,11 +354,14 @@ If requests are available:
 - Always do this request-list step first before fetching quotes
 - List the real requests in a brief human-readable way using this style:
   {brand} {bike_model} {year} - {items_summary}
-- Also show selection buttons for each real request using the request id in the button label, for example:
-  Request 1 ({request_id}), Request 2 ({request_id}), Request 3 ({request_id})
+- Do not show or ask for raw request_id in the user-facing message
+- Show simple human-friendly selection buttons only, for example:
+  Request 1, Request 2, Request 3
 - Ask clearly which request they want to see all quotes for
 - Do not skip this selection step unless the user has already selected one specific request
-- When the user selects one of the listed requests, save that selected request_id into CURRENT AGENT VARIABLES as `request_id`
+- Use the fetched request-history tool output already present in context to match which listed request the user is referring to
+- When the user selects one of the listed requests, save that matched request_id into CURRENT AGENT VARIABLES as `request_id`
+- If the user's selection is ambiguous, ask one short clarification question using only the human-friendly request labels, not raw request_id
 
 After the user selects a request:
 - Run the quotes tool using that selected request_id
@@ -514,8 +526,9 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "The 'id' field is the mechanic_id from CURRENT AGENT VARIABLES. "
         "Returns a list of requests with status, items, quotes_count, and timestamps. "
         "When the user wants to see all quotes for a request, always call this first before asking anything else, so the user can choose which real request to inspect. "
-        "List the requests briefly in a human-readable way and provide selection buttons that include each real request_id. "
-        "Use the returned real request_id values for internal selection state by saving the chosen one to CURRENT AGENT VARIABLES as request_id. "
+        "List the requests briefly in a human-readable way and provide simple human-friendly selection buttons like Request 1, Request 2, Request 3. "
+        "Do not show or ask for the raw request_id in the user-facing message. "
+        "Use the returned real request_id values only for internal selection state by matching the user's chosen request label and then saving the chosen request_id to CURRENT AGENT VARIABLES as request_id. "
         "Show each request's items, status, and quotes count to the user. "
         "Do not invent or summarize data that is not in the response."
     ),
@@ -531,6 +544,7 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Use this tool to fetch all quotes for one selected request. "
         "Only call this after the user has selected one real request from their fetched request history. "
         "Get request_id from CURRENT AGENT VARIABLES if it was already saved there. "
+        "Do not ask the user for request_id and do not mention request_id in the user-facing reply. "
         "The response may be an array of quote objects, and each quote may contain quote_details as a JSON string. "
         "Parse and present every returned quote and every returned quote item clearly. "
         "Do not skip fields that are present in the tool response."
