@@ -1520,85 +1520,6 @@ def _build_context_payload(
     }
 
 
-def _extract_usage_from_ai_message(message: Optional[BaseMessage]) -> Dict[str, int]:
-    if not isinstance(message, AIMessage):
-        return {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "cached_input_tokens": 0,
-            "cache_hit_percent": 0.0,
-            "uncached_input_tokens": 0,
-            "reasoning_tokens": 0,
-            "audio_input_tokens": 0,
-            "audio_output_tokens": 0,
-        }
-
-    usage_metadata = getattr(message, "usage_metadata", None)
-    if isinstance(usage_metadata, dict):
-        input_tokens = int(usage_metadata.get("input_tokens", 0) or 0)
-        output_tokens = int(usage_metadata.get("output_tokens", 0) or 0)
-        total_tokens = int(usage_metadata.get("total_tokens", input_tokens + output_tokens) or 0)
-        input_token_details = usage_metadata.get("input_token_details", {})
-        output_token_details = usage_metadata.get("output_token_details", {})
-        cached_input_tokens = int((input_token_details or {}).get("cache_read", 0) or 0)
-        reasoning_tokens = int((output_token_details or {}).get("reasoning", 0) or 0)
-        audio_input_tokens = int((input_token_details or {}).get("audio", 0) or 0)
-        audio_output_tokens = int((output_token_details or {}).get("audio", 0) or 0)
-        uncached_input_tokens = max(input_tokens - cached_input_tokens, 0)
-        cache_hit_percent = round((cached_input_tokens / input_tokens) * 100, 2) if input_tokens > 0 else 0.0
-        return {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": total_tokens,
-            "cached_input_tokens": cached_input_tokens,
-            "cache_hit_percent": cache_hit_percent,
-            "uncached_input_tokens": uncached_input_tokens,
-            "reasoning_tokens": reasoning_tokens,
-            "audio_input_tokens": audio_input_tokens,
-            "audio_output_tokens": audio_output_tokens,
-        }
-
-    response_metadata = getattr(message, "response_metadata", None)
-    if isinstance(response_metadata, dict):
-        token_usage = response_metadata.get("token_usage", {})
-        if isinstance(token_usage, dict):
-            input_tokens = int(token_usage.get("prompt_tokens", 0) or 0)
-            output_tokens = int(token_usage.get("completion_tokens", 0) or 0)
-            total_tokens = int(token_usage.get("total_tokens", input_tokens + output_tokens) or 0)
-            prompt_token_details = token_usage.get("prompt_tokens_details", {})
-            completion_token_details = token_usage.get("completion_tokens_details", {})
-            cached_input_tokens = int((prompt_token_details or {}).get("cached_tokens", 0) or 0)
-            reasoning_tokens = int((completion_token_details or {}).get("reasoning_tokens", 0) or 0)
-            audio_input_tokens = int((prompt_token_details or {}).get("audio_tokens", 0) or 0)
-            audio_output_tokens = int((completion_token_details or {}).get("audio_tokens", 0) or 0)
-            uncached_input_tokens = max(input_tokens - cached_input_tokens, 0)
-            cache_hit_percent = round((cached_input_tokens / input_tokens) * 100, 2) if input_tokens > 0 else 0.0
-            return {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_tokens": total_tokens,
-                "cached_input_tokens": cached_input_tokens,
-                "cache_hit_percent": cache_hit_percent,
-                "uncached_input_tokens": uncached_input_tokens,
-                "reasoning_tokens": reasoning_tokens,
-                "audio_input_tokens": audio_input_tokens,
-                "audio_output_tokens": audio_output_tokens,
-            }
-
-    return {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-        "cached_input_tokens": 0,
-        "cache_hit_percent": 0.0,
-        "uncached_input_tokens": 0,
-        "reasoning_tokens": 0,
-        "audio_input_tokens": 0,
-        "audio_output_tokens": 0,
-    }
-
-
 def _resolve_api_key(body: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Optional[str]:
     if USE_GROQ:
         if isinstance(body.get("groq_api_key"), str) and body.get("groq_api_key"):
@@ -1722,7 +1643,6 @@ def run_agent(
         )
         return {
             "reply": reply_text,
-            "usage": _extract_usage_from_ai_message(None),
             "context": fallback_context,
         }
     except Exception as e:
@@ -1734,7 +1654,6 @@ def run_agent(
         )
         return {
             "reply": error_reply,
-            "usage": _extract_usage_from_ai_message(None),
             "context": error_context,
         }
 
@@ -1773,7 +1692,6 @@ def run_agent(
 
     return {
         "reply": reply_text,
-        "usage": _extract_usage_from_ai_message(last_ai_message),
         "context": final_context,
     }
 
