@@ -1434,8 +1434,50 @@ def _messages_from_context(context_messages: Any) -> List[BaseMessage]:
             parsed.append(item)
         elif isinstance(item, dict):
             parsed.append(_dict_to_message(item))
-    return parsed
+    return _sanitize_tool_message_sequence(parsed)
 
+
+def _sanitize_tool_message_sequence(messages: List[BaseMessage]) -> List[BaseMessage]:
+    sanitized: List[BaseMessage] = []
+    pending_tool_calls: Dict[str, Dict[str, Any]] = {}
+
+    for message in messages or []:
+        if isinstance(message, AIMessage):
+            tool_calls = getattr(message, "tool_calls", None) or []
+            valid_tool_calls: List[Dict[str, Any]] = []
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                tool_call_id = tool_call.get("id")
+                tool_name = tool_call.get("name")
+                if tool_call_id and tool_name:
+                    pending_tool_calls[str(tool_call_id)] = tool_call
+                    valid_tool_calls.append(tool_call)
+
+            if tool_calls and not valid_tool_calls:
+                try:
+                    message = AIMessage(content=message.content)
+                except Exception:
+                    message = AIMessage(content=_safe_content_to_str(message.content))
+            elif tool_calls and len(valid_tool_calls) != len(tool_calls):
+                try:
+                    message = AIMessage(content=message.content, tool_calls=valid_tool_calls)
+                except Exception:
+                    message = AIMessage(content=_safe_content_to_str(message.content))
+
+            sanitized.append(message)
+            continue
+
+        if isinstance(message, ToolMessage):
+            tool_call_id = getattr(message, "tool_call_id", None)
+            tool_name = getattr(message, "name", None)
+            if tool_call_id and tool_name and str(tool_call_id) in pending_tool_calls:
+                sanitized.append(message)
+            continue
+
+        sanitized.append(message)
+
+    return sanitized
 
 def _messages_to_context(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
     serialized: List[Dict[str, Any]] = []
@@ -1446,6 +1488,10 @@ def _messages_to_context(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
         }
         if getattr(msg, "name", None) is not None:
             data["name"] = msg.name
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            data["tool_calls"] = msg.tool_calls
+        if isinstance(msg, AIMessage) and getattr(msg, "invalid_tool_calls", None):
+            data["invalid_tool_calls"] = msg.invalid_tool_calls
         if isinstance(msg, ToolMessage):
             if getattr(msg, "tool_call_id", None) is not None:
                 data["tool_call_id"] = msg.tool_call_id
@@ -1469,7 +1515,7 @@ def _legacy_conversation_to_messages(conversation_history: List[Dict[str, Any]])
                 pass
         if isinstance(turn, dict):
             msgs.append(_dict_to_message(turn))
-    return msgs
+    return _sanitize_tool_message_sequence(msgs)
 
 
 def _to_messages(
