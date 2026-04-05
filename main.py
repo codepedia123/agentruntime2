@@ -1437,6 +1437,34 @@ def _messages_from_context(context_messages: Any) -> List[BaseMessage]:
     return parsed
 
 
+def _truncate_tool_payload(value: Any, max_items: int = 4) -> Any:
+    if isinstance(value, dict):
+        truncated: Dict[str, Any] = {}
+        for idx, (key, child) in enumerate(value.items()):
+            if idx >= max_items:
+                break
+            truncated[key] = _truncate_tool_payload(child, max_items=max_items)
+        return truncated
+    if isinstance(value, list):
+        return [_truncate_tool_payload(child, max_items=max_items) for child in value[:max_items]]
+    return value
+
+
+def _truncate_tool_calls_for_context(tool_calls: Any, max_items: int = 4) -> Any:
+    if not isinstance(tool_calls, list):
+        return tool_calls
+
+    truncated_calls: List[Dict[str, Any]] = []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        truncated_call = dict(tool_call)
+        if "args" in truncated_call:
+            truncated_call["args"] = _truncate_tool_payload(truncated_call["args"], max_items=max_items)
+        truncated_calls.append(truncated_call)
+    return truncated_calls
+
+
 def _messages_to_context(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
     serialized: List[Dict[str, Any]] = []
     for msg in messages or []:
@@ -1446,6 +1474,10 @@ def _messages_to_context(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
         }
         if getattr(msg, "name", None) is not None:
             data["name"] = msg.name
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            data["tool_calls"] = _truncate_tool_calls_for_context(msg.tool_calls, max_items=4)
+        if isinstance(msg, AIMessage) and getattr(msg, "invalid_tool_calls", None):
+            data["invalid_tool_calls"] = _truncate_tool_calls_for_context(msg.invalid_tool_calls, max_items=4)
         if isinstance(msg, ToolMessage):
             if getattr(msg, "tool_call_id", None) is not None:
                 data["tool_call_id"] = msg.tool_call_id
