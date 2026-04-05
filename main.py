@@ -1444,14 +1444,8 @@ def _messages_to_context(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
         data: Dict[str, Any] = {
             "content": msg.content,
         }
-        if getattr(msg, "id", None) is not None:
-            data["id"] = msg.id
         if getattr(msg, "name", None) is not None:
             data["name"] = msg.name
-        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-            data["tool_calls"] = msg.tool_calls
-        if isinstance(msg, AIMessage) and getattr(msg, "invalid_tool_calls", None):
-            data["invalid_tool_calls"] = msg.invalid_tool_calls
         if isinstance(msg, ToolMessage):
             if getattr(msg, "tool_call_id", None) is not None:
                 data["tool_call_id"] = msg.tool_call_id
