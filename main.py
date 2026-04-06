@@ -1439,17 +1439,19 @@ def _messages_from_context(context_messages: Any) -> List[BaseMessage]:
 def _messages_to_context(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
     serialized: List[Dict[str, Any]] = []
     for msg in messages or []:
+        if isinstance(msg, ToolMessage):
+            continue
+
         msg_type = getattr(msg, "type", msg.__class__.__name__.replace("Message", "").lower())
+        content = _safe_content_to_str(msg.content).strip()
+        if isinstance(msg, AIMessage) and not content:
+            continue
+
         data: Dict[str, Any] = {
             "content": msg.content,
         }
         if getattr(msg, "name", None) is not None:
             data["name"] = msg.name
-        if isinstance(msg, ToolMessage):
-            if getattr(msg, "tool_call_id", None) is not None:
-                data["tool_call_id"] = msg.tool_call_id
-            if getattr(msg, "status", None) is not None:
-                data["status"] = msg.status
         serialized.append({
             "type": msg_type,
             "data": data,
