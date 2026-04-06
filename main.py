@@ -143,6 +143,16 @@ CRITICAL RULES:
 - Do not invent alternate menus, alternate labels, or alternate flows when a defined state exists
 - Render fixed templates in Hinglish while preserving their meaning and structure
 
+8. SHORT-TERM DATA VARIABLES
+- Use CURRENT AGENT VARIABLES for short-term selection state
+- Whenever request history is fetched, save `all_requests` in this format:
+  `Request1,<request_id>;Request2,<request_id>;Request3,<request_id>`
+- Also replace the `data` variable with the current request-selection mapping whenever requests are fetched
+- Whenever quotes for a request are fetched, replace the `data` variable with the current quote-selection mapping needed for the next action
+- Whenever the user chooses a request, quote, order, or any other short-term item from fetched data, replace the previous `data` variable with the new currently relevant mapping
+- Do not keep stale short-term selection data in `data` once a new selection set is needed
+- Never show raw IDs to the user unless absolutely necessary
+
 ---
 
 REQUIRED FIELDS PER PART:
@@ -347,6 +357,7 @@ Do not ask the user for extra details first if mechanic_id is available in CURRE
 First fetch the user's real request history using the mechanic_id.
 If requests are available:
 - Always do this request-list step first before fetching quotes
+- Whenever request history is fetched, save `all_requests` and replace `data` with the current request-selection mapping
 - List the real requests in a brief human-readable way using this style:
   {brand} {bike_model} {year} - {items_summary}
 - Do not show or ask for raw request_id in the user-facing message
@@ -354,18 +365,24 @@ If requests are available:
   Request 1, Request 2, Request 3
 - Ask clearly which request they want to see all quotes for
 - Do not skip this selection step unless the user has already selected one specific request
-- Use the fetched request-history tool output already present in context to match which listed request the user is referring to
+- Use the fetched request-history tool output and the saved `all_requests` / `data` variables to match which listed request the user is referring to
 - When the user selects one of the listed requests, save that matched request_id into CURRENT AGENT VARIABLES as `request_id`
 - If the user's selection is ambiguous, ask one short clarification question using only the human-friendly request labels, not raw request_id
 
 After the user selects a request:
 - Run the quotes tool using that selected request_id
+- Replace `data` with the quote-selection mapping for that request so the next quote choice can be matched internally
 - Show all real quotes for that request in one structured message
 - Include every quote one by one
 - For each quote include all available real fields from the tool response, including dealer info if present, status, created time, notes, and each quote item with part name, company, model, year, quantity, price, part type, and stock status
 - If `quote_details` comes as a JSON string, parse it and present all items clearly
 - Do not omit quote rows or item details that are present in the tool response
 - Keep the response structured and easy to read, but grounded only in actual returned data
+- If the user wants to order one of the quotes, first ask them to choose the quote using simple buttons like Quote 1, Quote 2, Quote 3
+- Match that choice using the saved `data` variable, not by asking for raw IDs
+- After the user chooses a quote, confirm the selected quote clearly before moving ahead
+- After confirmation, call the checkout-template tool for that selected quote
+- The checkout-template tool should be used to prepare item details, per-item prices, and total price for the selected quote before any order step is shown to the user
 
 If no requests are available:
 I can't see your request history right now.|Exit
@@ -393,10 +410,14 @@ I can't see your order history right now.|Exit
 
 9. ORDER FLOW
 
-If user selects an order:
+If user wants to order a quote:
 
-Confirm order:
+First confirm which quote they want to order using the current quote-selection data in `data`.
 Show only the real selected quote.|Confirm Order,Cancel
+
+If user confirms the selected quote:
+→ Call the checkout-template tool
+→ Replace `data` with the current checkout/order selection data returned or derived for that selected quote
 
 ---
 
@@ -522,6 +543,8 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "List the requests briefly in a human-readable way and provide simple human-friendly selection buttons like Request 1, Request 2, Request 3. "
         "Do not show or ask for the raw request_id in the user-facing message. "
         "Use the returned real request_id values only for internal selection state by matching the user's chosen request label and then saving the chosen request_id to CURRENT AGENT VARIABLES as request_id. "
+        "Also save all request mappings into CURRENT AGENT VARIABLES as all_requests in the format Request1,<id>;Request2,<id>;Request3,<id>. "
+        "Replace the CURRENT AGENT VARIABLES data field with the same currently relevant request-selection mapping. "
         "Show each request's items, status, and quotes count to the user. "
         "Do not invent or summarize data that is not in the response."
     ),
@@ -539,10 +562,30 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Get request_id from CURRENT AGENT VARIABLES if it was already saved there. "
         "Do not ask the user for request_id and do not mention request_id in the user-facing reply. "
         "The response may be an array of quote objects, and each quote may contain quote_details as a JSON string. "
+        "Replace the CURRENT AGENT VARIABLES data field with the quote-selection mapping needed for the next quote choice. "
         "Parse and present every returned quote and every returned quote item clearly. "
         "Do not skip fields that are present in the tool response."
     ),
     "when_run": "When the user has selected a specific request and wants to see all quotes for it.",
+},
+    {
+    "name": "create_checkout_template",
+    "api_url": "https://example.com/webhook/checkout-template",
+    "payload_template": {
+        "request_id": "",
+        "quote_id": "",
+        "quote_details": [],
+        "notes": "",
+        "total_price": "",
+    },
+    "instructions": (
+        "Use this dummy tool after the user has chosen and confirmed a specific quote they want to order. "
+        "Get request_id from CURRENT AGENT VARIABLES. "
+        "Get the selected quote mapping from the CURRENT AGENT VARIABLES data field. "
+        "Prepare a checkout-session style payload with item details, per-item calculated prices, notes, and total price for the selected quote. "
+        "Replace the CURRENT AGENT VARIABLES data field with the currently relevant checkout/order mapping after this step."
+    ),
+    "when_run": "When the user confirms the quote they want to order and the app should prepare a checkout template.",
 }
 ]
 
@@ -1251,6 +1294,44 @@ def _is_valid_api_url(u: str) -> bool:
         return False
 
 
+def _extract_response_list(tool_result: Any) -> List[Dict[str, Any]]:
+    if isinstance(tool_result, list):
+        return [item for item in tool_result if isinstance(item, dict)]
+    if isinstance(tool_result, dict):
+        response = tool_result.get("response")
+        if isinstance(response, list):
+            return [item for item in response if isinstance(item, dict)]
+    return []
+
+
+def _update_short_term_variables_from_tool(tool_name: str, response_data: Any) -> None:
+    global _CURRENT_AGENT_VARIABLES
+    items = _extract_response_list(response_data)
+    if not items:
+        return
+
+    if tool_name == "fetch_request_history":
+        mappings: List[str] = []
+        for idx, item in enumerate(items, start=1):
+            request_id = item.get("id") or item.get("request_id")
+            if request_id:
+                mappings.append(f"Request{idx},{request_id}")
+        if mappings:
+            joined = ";".join(mappings)
+            _CURRENT_AGENT_VARIABLES["all_requests"] = joined
+            _CURRENT_AGENT_VARIABLES["data"] = joined
+        return
+
+    if tool_name == "fetch_request_quotes":
+        mappings = []
+        for idx, item in enumerate(items, start=1):
+            quote_id = item.get("id") or item.get("quote_id")
+            if quote_id:
+                mappings.append(f"Quote{idx},{quote_id}")
+        if mappings:
+            _CURRENT_AGENT_VARIABLES["data"] = ";".join(mappings)
+
+
 def build_static_tools(static_tool_configs: List[Dict[str, Any]]) -> List[StructuredTool]:
     """Convert static tool config into LangChain StructuredTool objects."""
     tools: List[StructuredTool] = []
@@ -1306,6 +1387,8 @@ def build_static_tools(static_tool_configs: List[Dict[str, Any]]) -> List[Struct
                         response_data = resp.json()
                     except Exception:
                         response_data = resp.text
+
+                    _update_short_term_variables_from_tool(_name, response_data)
 
                     return json.dumps({
                         "ok": bool(resp.ok),
