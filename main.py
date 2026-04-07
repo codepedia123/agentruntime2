@@ -678,6 +678,9 @@ CRITICAL RULES:
 - If relevant short-term IDs or mappings were shown in previous tool outputs or earlier chat and will be needed later, save them into CURRENT AGENT VARIABLES before continuing
 - Recover only relevant operational data like request, quote, or order mappings; do not save random chat text as variables
 - Do not only "remember" these values mentally; call `manage_variables` to save them as soon as they appear
+- If a new request broadcast is visible in recent chat and its request_id or request details are not yet saved, call `manage_variables` before asking the first quote question
+- Save the latest visible request into variables needed for later actions, including `request_id` and current request details in `data`
+- If a newer request broadcast appears later, replace the older request-related short-term variables with the newer request's data
 
 ---
 
@@ -774,7 +777,7 @@ Include: Mechanic name, Area, and all parts with Part Name, Company, Model, Year
 Do not invent or modify any field.
 Do not show the internal request_id to the dealer.
 Immediately call `manage_variables` to save the request's request_id as `request_id` for later actions on that request.
-Also call `manage_variables` to replace `data` with the current request mapping for this broadcast, and save `all_requests` if multiple requests are currently listed.
+Also call `manage_variables` to replace `data` with the current request mapping and current request details for this broadcast, and save `all_requests` if multiple requests are currently listed.
 
 Format:
 
@@ -797,6 +800,9 @@ If dealer taps Send Quote or says they want to quote:
 Before continuing, use `manage_variables` to save the selected request's internal request_id into CURRENT AGENT VARIABLES using `request_id`.
 Use that saved `request_id` for all later quote submission actions.
 Use the current `data` / `all_requests` mapping to resolve the dealer's selected request label when needed.
+If the latest visible request broadcast in recent chat has not yet been saved, call `manage_variables` first to save that request_id and current request details before asking for price.
+If the saved request variables belong to an older request and a newer broadcast is now visible, replace the old values with the latest request's values before continuing.
+Do not ask the first price question until the current request's id and relevant request details are saved in variables.
 
 Collect required fields one at a time.
 Do not confirm early.
@@ -1214,6 +1220,7 @@ TOOL USAGE RULES:
 - Do not invent missing dealer details.
 - Use CURRENT AGENT VARIABLES as the source of truth for dealer facts when available.
 - Whenever future-use operational data appears in previous tool outputs or earlier chat, call `manage_variables` immediately to save it before continuing.
+- Before asking quote-entry questions for a request, ensure the latest visible request's id and relevant request details are already saved in variables.
 
 
 """
@@ -1241,6 +1248,7 @@ SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Get request_id from CURRENT AGENT VARIABLES. "
         "Use the CURRENT AGENT VARIABLES data field when recent short-term request selection data is needed before submit. "
         "The agent should use manage_variables to store that variable as soon as the dealer selects the request they want to quote on. "
+        "Before quote submission, the latest visible request's id and relevant request details must already be saved in CURRENT AGENT VARIABLES. "
         "Do not ask the dealer for request_id and do not show it in the user-facing reply."
     ),
     "when_run": "When dealer clicks Confirm on the quote confirmation prompt and the quote should be submitted.",
