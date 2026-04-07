@@ -660,6 +660,18 @@ CRITICAL RULES:
 - Do not invent alternate menus, alternate labels, or alternate flows when a defined state exists
 - Render fixed templates in Hinglish while preserving their meaning and structure
 
+7. SHORT-TERM DATA VARIABLES
+- Use CURRENT AGENT VARIABLES for short-term selection state
+- Whenever the dealer is shown one or more selectable requests, quotes, orders, or other fetched/listed items that will be used in the next step, replace the `data` variable with the current mapping only
+- Use simple label-to-id mappings in `data`, for example:
+  `Request1,<request_id>;Request2,<request_id>`
+  `Order1,<order_id>;Order2,<order_id>`
+  `Quote1,<quote_id>;Quote2,<quote_id>`
+- Whenever requests are listed for quote submission, also save `all_requests` with the current request mapping
+- When the dealer chooses one item, match that label using `data`, then replace `data` again with the next currently relevant selection set if needed
+- Do not keep stale short-term selection data in `data`
+- Never ask the dealer for raw IDs
+
 ---
 
 QUOTE REQUIRED FIELDS:
@@ -755,6 +767,7 @@ Include: Mechanic name, Area, and all parts with Part Name, Company, Model, Year
 Do not invent or modify any field.
 Do not show the internal request_id to the dealer.
 Store the request's request_id internally in CURRENT AGENT VARIABLES as `request_id` for later actions on that request.
+Also replace `data` with the current request mapping for this broadcast, and save `all_requests` if multiple requests are currently listed.
 
 Format:
 
@@ -776,6 +789,7 @@ If dealer taps Send Quote or says they want to quote:
 
 Before continuing, save the selected request's internal request_id into CURRENT AGENT VARIABLES using `request_id`.
 Use that saved `request_id` for all later quote submission actions.
+Use the current `data` / `all_requests` mapping to resolve the dealer's selected request label when needed.
 
 Collect required fields one at a time.
 Do not confirm early.
@@ -855,6 +869,7 @@ Kuch update karna hai ya continue karein?|Update,Confirm,Cancel
 If dealer taps Confirm after quote preview:
 
 → Call the submit quote tool
+→ Replace `data` with whatever next short-term mapping is relevant after quote submission, if any
 
 Aapka request bhej diya gaya hai! Agar order milta hai toh delivery agent pickup ke liye aayega. Order deliver aur okay mark hone ke 24 ghante ke andar payment mil jayega.|Main Menu
 
@@ -990,6 +1005,7 @@ If dealer asks for Order History:
 If orders are available:
 List only real orders from available data.
 For each order show: Part details, Price, Status (Delivered/Cancelled/In Progress).
+If the dealer can select one of those orders in the next step, replace `data` with the current order-selection mapping.
 
 If orders are not available:
 Abhi aapki order history nahi dikh rahi.|Exit
@@ -1005,6 +1021,7 @@ List only real live requests in the dealer's district from available data.
 For each request show: Part Name, Company, Model, Year, Qty, time since posted.
 
 Number each request.
+Save `all_requests` and replace `data` with the current request-selection mapping before asking the dealer to choose.
 
 Kaunse par quote bhejenge?|{numbered options},Main Menu
 
@@ -1062,6 +1079,7 @@ If dealer asks about their sent quotes or quote history:
 If quotes data is available:
 List only real quotes from available data.
 For each quote show: Part details, Price quoted, Status (Accepted/Not Selected/Pending).
+If the dealer can select one of those quotes in the next step, replace `data` with the current quote-selection mapping.
 
 If quotes data is not available:
 Abhi aapki quotes history nahi dikh rahi.|Exit
@@ -1213,6 +1231,7 @@ SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
         "and stock_status (Available/Arrange Karna Padega). "
         "Get dealer_id, dealer_rating, and district from CURRENT AGENT VARIABLES. "
         "Get request_id from CURRENT AGENT VARIABLES. "
+        "Use the CURRENT AGENT VARIABLES data field when recent short-term request selection data is needed before submit. "
         "The agent should store that variable as soon as the dealer selects the request they want to quote on. "
         "Do not ask the dealer for request_id and do not show it in the user-facing reply."
     ),
