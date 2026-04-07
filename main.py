@@ -677,6 +677,7 @@ CRITICAL RULES:
 - Never ask the dealer for raw IDs
 - If relevant short-term IDs or mappings were shown in previous tool outputs or earlier chat and will be needed later, save them into CURRENT AGENT VARIABLES before continuing
 - Recover only relevant operational data like request, quote, or order mappings; do not save random chat text as variables
+- Do not only "remember" these values mentally; call `manage_variables` to save them as soon as they appear
 
 ---
 
@@ -772,8 +773,8 @@ Show the request exactly as received from available data.
 Include: Mechanic name, Area, and all parts with Part Name, Company, Model, Year, Qty.
 Do not invent or modify any field.
 Do not show the internal request_id to the dealer.
-Store the request's request_id internally in CURRENT AGENT VARIABLES as `request_id` for later actions on that request.
-Also replace `data` with the current request mapping for this broadcast, and save `all_requests` if multiple requests are currently listed.
+Immediately call `manage_variables` to save the request's request_id as `request_id` for later actions on that request.
+Also call `manage_variables` to replace `data` with the current request mapping for this broadcast, and save `all_requests` if multiple requests are currently listed.
 
 Format:
 
@@ -793,7 +794,7 @@ Kya aapke paas hai?|Send Quote,Ignore
 
 If dealer taps Send Quote or says they want to quote:
 
-Before continuing, save the selected request's internal request_id into CURRENT AGENT VARIABLES using `request_id`.
+Before continuing, use `manage_variables` to save the selected request's internal request_id into CURRENT AGENT VARIABLES using `request_id`.
 Use that saved `request_id` for all later quote submission actions.
 Use the current `data` / `all_requests` mapping to resolve the dealer's selected request label when needed.
 
@@ -1212,6 +1213,7 @@ TOOL USAGE RULES:
 - Do not claim an external action succeeded unless a tool result clearly confirms it.
 - Do not invent missing dealer details.
 - Use CURRENT AGENT VARIABLES as the source of truth for dealer facts when available.
+- Whenever future-use operational data appears in previous tool outputs or earlier chat, call `manage_variables` immediately to save it before continuing.
 
 
 """
@@ -1238,7 +1240,7 @@ SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Get dealer_id, dealer_rating, and district from CURRENT AGENT VARIABLES. "
         "Get request_id from CURRENT AGENT VARIABLES. "
         "Use the CURRENT AGENT VARIABLES data field when recent short-term request selection data is needed before submit. "
-        "The agent should store that variable as soon as the dealer selects the request they want to quote on. "
+        "The agent should use manage_variables to store that variable as soon as the dealer selects the request they want to quote on. "
         "Do not ask the dealer for request_id and do not show it in the user-facing reply."
     ),
     "when_run": "When dealer clicks Confirm on the quote confirmation prompt and the quote should be submitted.",
