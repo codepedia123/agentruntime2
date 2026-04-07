@@ -213,7 +213,7 @@ Welcome to PartsWale! 🔧
 
 Hello {user_name}!
 
-What would you like to do?|Request a Part,Order History,Request History,Watch Tutorial
+What would you like to do?|Request a Part,All Quotes,Order History,Request History,Watch Tutorial
 
 ---
 
