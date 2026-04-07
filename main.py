@@ -13,7 +13,7 @@ import traceback
 import urllib.parse
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, Annotated
+from typing import Any, Dict, List, Optional, Annotated
 from operator import ior
 
 import requests
@@ -145,6 +145,7 @@ CRITICAL RULES:
 
 8. SHORT-TERM DATA VARIABLES
 - Use CURRENT AGENT VARIABLES for short-term selection state
+- Use the `manage_variables` tool immediately whenever some value will be needed later in the flow
 - Whenever request history is fetched, save `all_requests` in this format:
   `Request1,<request_id>;Request2,<request_id>;Request3,<request_id>`
 - Also replace the `data` variable with the current request-selection mapping whenever requests are fetched
@@ -152,6 +153,8 @@ CRITICAL RULES:
 - Whenever the user chooses a request, quote, order, or any other short-term item from fetched data, replace the previous `data` variable with the new currently relevant mapping
 - Do not keep stale short-term selection data in `data` once a new selection set is needed
 - Never show raw IDs to the user unless absolutely necessary
+- If relevant short-term IDs or mappings were shown in previous tool outputs or earlier chat and will be needed later, save them into CURRENT AGENT VARIABLES before continuing
+- Recover only relevant operational data like request, quote, or order mappings; do not save random chat text as variables
 
 ---
 
@@ -662,6 +665,7 @@ CRITICAL RULES:
 
 7. SHORT-TERM DATA VARIABLES
 - Use CURRENT AGENT VARIABLES for short-term selection state
+- Use the `manage_variables` tool immediately whenever some value will be needed later in the flow
 - Whenever the dealer is shown one or more selectable requests, quotes, orders, or other fetched/listed items that will be used in the next step, replace the `data` variable with the current mapping only
 - Use simple label-to-id mappings in `data`, for example:
   `Request1,<request_id>;Request2,<request_id>`
@@ -671,6 +675,8 @@ CRITICAL RULES:
 - When the dealer chooses one item, match that label using `data`, then replace `data` again with the next currently relevant selection set if needed
 - Do not keep stale short-term selection data in `data`
 - Never ask the dealer for raw IDs
+- If relevant short-term IDs or mappings were shown in previous tool outputs or earlier chat and will be needed later, save them into CURRENT AGENT VARIABLES before continuing
+- Recover only relevant operational data like request, quote, or order mappings; do not save random chat text as variables
 
 ---
 
@@ -1290,7 +1296,13 @@ def manage_variables(updates: Optional[Dict[str, str]] = None, **kwargs: Any) ->
 MANAGE_VARIABLES_TOOL = StructuredTool.from_function(
     func=manage_variables,
     name="manage_variables",
-    description="Use this tool to save, update, or create variables in memory for later turns.",
+    description=(
+        "Use this tool immediately to save, update, or replace variables that will be needed later in the flow. "
+        "Whenever request IDs, quote IDs, order IDs, request mappings, quote mappings, checkout mappings, "
+        "or other relevant short-term operational data appear in previous tool outputs or earlier chat and will be used further, "
+        "save them in CURRENT AGENT VARIABLES instead of relying on memory alone. "
+        "Do not save random chat text; save only relevant operational data."
+    ),
     args_schema=ManageVariablesArgs,
 )
 
@@ -1748,7 +1760,7 @@ def run_agent(
 
     # Convert conversation to messages
     msgs = _to_messages(context, conversation_history, message)
-    runtime_context_msg = _build_runtime_context_message(initial_vars)
+    runtime_context_msg = _build_runtime_context_message(dict(_CURRENT_AGENT_VARIABLES))
     if runtime_context_msg is not None:
         msgs = [runtime_context_msg] + msgs
 
