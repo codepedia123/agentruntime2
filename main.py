@@ -384,8 +384,11 @@ After the user selects a request:
 - If the user wants to order one of the quotes, first ask them to choose the quote using simple buttons like Quote 1, Quote 2, Quote 3
 - Match that choice using the saved `data` variable, not by asking for raw IDs
 - After the user chooses a quote, confirm the selected quote clearly before moving ahead
-- After confirmation, call the checkout-template tool for that selected quote
-- The checkout-template tool should be used to prepare item details, per-item prices, and total price for the selected quote before any order step is shown to the user
+- The selected quote may already include Request ID, Quote ID, and Dealer ID in the visible quote message; if so, save those values into variables before continuing
+- After confirmation, call the create-order tool for that selected quote
+- The create-order tool should return a payment URL
+- Present that payment URL to the user and ask them to complete payment there
+- Tell the user they will be notified as soon as payment is successful and the order is created
 
 If no requests are available:
 I can't see your request history right now.|Exit
@@ -419,14 +422,18 @@ First confirm which quote they want to order using the current quote-selection d
 Show only the real selected quote.|Confirm Order,Cancel
 
 If user confirms the selected quote:
-→ Call the checkout-template tool
-→ Replace `data` with the current checkout/order selection data returned or derived for that selected quote
+→ Call the create-order tool
+→ Use the selected quote's Quote ID, Request ID, Dealer ID, and CURRENT AGENT VARIABLES mechanic_id
+→ Present the returned payment link to the user and tell them to complete payment there
+→ Tell the user they will be notified when payment succeeds and the order is created
 
 ---
 
-After confirmation:
+After create-order succeeds:
 
-Order placed. Delivery in progress.|Track Order
+Complete payment here: {payment_url}
+
+Payment successful hote hi aapko notification mil jayega aur order create ho jayega.|OK
 
 ---
 
@@ -572,23 +579,23 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
     "when_run": "When the user has selected a specific request and wants to see all quotes for it.",
 },
     {
-    "name": "create_checkout_template",
-    "api_url": "https://example.com/webhook/checkout-template",
+    "name": "create_order",
+    "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/create_order",
     "payload_template": {
-        "request_id": "",
         "quote_id": "",
-        "quote_details": [],
-        "notes": "",
-        "total_price": "",
+        "mechanic_id": "",
+        "dealer_id": "",
     },
     "instructions": (
-        "Use this dummy tool after the user has chosen and confirmed a specific quote they want to order. "
-        "Get request_id from CURRENT AGENT VARIABLES. "
-        "Get the selected quote mapping from the CURRENT AGENT VARIABLES data field. "
-        "Prepare a checkout-session style payload with item details, per-item calculated prices, notes, and total price for the selected quote. "
-        "Replace the CURRENT AGENT VARIABLES data field with the currently relevant checkout/order mapping after this step."
+        "Use this tool after the user has chosen and confirmed a specific quote they want to order. "
+        "Get mechanic_id from CURRENT AGENT VARIABLES. "
+        "Get quote_id and dealer_id from the selected quote details already shown in chat or saved in CURRENT AGENT VARIABLES. "
+        "If the selected quote message also showed Request ID, Quote ID, and Dealer ID, save those values before calling this tool. "
+        "The tool returns an order/payment session with a URL. "
+        "Present that URL to the user and tell them to complete payment there. "
+        "Tell the user they will be notified once payment is successful and the order is created."
     ),
-    "when_run": "When the user confirms the quote they want to order and the app should prepare a checkout template.",
+    "when_run": "When the user confirms the quote they want to order and the app should create the order payment session.",
 }
 ]
 
