@@ -59,7 +59,7 @@ OPENAI_BASE_URL = "https://api.openai.com/v1"
 # AGENT STATE
 # ============================================================
 class AgentState(MessagesState):
-    variables: Annotated[Dict[str, str], ior]
+    variables: Annotated[Dict[str, Any], ior]
     is_last_step: bool = False
     remaining_steps: int = 0
 
@@ -143,18 +143,21 @@ CRITICAL RULES:
 - Do not invent alternate menus, alternate labels, or alternate flows when a defined state exists
 - Render fixed templates in Hinglish while preserving their meaning and structure
 
-8. SHORT-TERM DATA VARIABLES
-- Use CURRENT AGENT VARIABLES for short-term selection state
-- Use the `manage_variables` tool immediately whenever some value will be needed later in the flow
-- Whenever request history is fetched, save `all_requests` in this format:
-  `Request1,<request_id>;Request2,<request_id>;Request3,<request_id>`
-- Also replace the `data` variable with the current request-selection mapping whenever requests are fetched
-- Whenever quotes for a request are fetched, replace the `data` variable with the current quote-selection mapping needed for the next action
-- Whenever the user chooses a request, quote, order, or any other short-term item from fetched data, replace the previous `data` variable with the new currently relevant mapping
-- Do not keep stale short-term selection data in `data` once a new selection set is needed
-- Never show raw IDs to the user unless absolutely necessary
-- If relevant short-term IDs or mappings were shown in previous tool outputs or earlier chat and will be needed later, save them into CURRENT AGENT VARIABLES before continuing
-- Recover only relevant operational data like request, quote, or order mappings; do not save random chat text as variables
+8. WORKING MEMORY IN CURRENT AGENT VARIABLES.context
+- CURRENT AGENT VARIABLES contains stable user facts plus one rotating object named `context`
+- The `context` object is the only working-memory area for request, quote, order, and selection data needed later in the flow
+- Stable user facts like user_name, phone, mechanic_id, dealer_id, district, rating, and totals are not working memory; do not overwrite them unless the user actually changes them
+- Use the `manage_variables` tool immediately whenever future-use operational data appears in the current message, recent chat, or a tool response
+- Save that operational data inside CURRENT AGENT VARIABLES under the key `context`
+- Save only minimal structured data needed for later steps, such as:
+  - active ids like request_id, quote_id, order_id, dealer_id
+  - numbered selection lists like Request 1, Quote 2, Order 3 with their ids
+  - brief request, quote, or order details needed for the next question or tool call
+- Do not save full raw tool responses, full message transcripts, or random chat text into `context`
+- When a newer request, quote, order, or selection checkpoint becomes the active one, replace the older `context` object with the newer relevant one instead of keeping stale data
+- Before asking a next-step question or calling a tool that depends on earlier fetched or visible data, first ensure CURRENT AGENT VARIABLES.context already contains the needed operational data; if it does not, call `manage_variables` first
+- If relevant ids or dynamic item details are already visible in recent chat or previous tool results and are needed later, save them into CURRENT AGENT VARIABLES.context before continuing
+- Never ask the user for raw ids if those ids are already available in chat or tool results
 
 ---
 
@@ -360,7 +363,7 @@ Do not ask the user for extra details first if mechanic_id is available in CURRE
 First fetch the user's real request history using the mechanic_id.
 If requests are available:
 - Always do this request-list step first before fetching quotes
-- Whenever request history is fetched, save `all_requests` and replace `data` with the current request-selection mapping
+- Before replying with the list, save a compact request-selection object into CURRENT AGENT VARIABLES.context
 - List the real requests in a brief human-readable way using this style:
   {brand} {bike_model} {year} - {items_summary}
 - Do not show or ask for raw request_id in the user-facing message
@@ -368,13 +371,13 @@ If requests are available:
   Request 1, Request 2, Request 3
 - Ask clearly which request they want to see all quotes for
 - Do not skip this selection step unless the user has already selected one specific request
-- Use the fetched request-history tool output and the saved `all_requests` / `data` variables to match which listed request the user is referring to
-- When the user selects one of the listed requests, save that matched request_id into CURRENT AGENT VARIABLES as `request_id`
+- Use the fetched request-history tool output and the saved CURRENT AGENT VARIABLES.context selection object to match which listed request the user is referring to
+- When the user selects one of the listed requests, update CURRENT AGENT VARIABLES.context with the matched request_id and the currently relevant request details
 - If the user's selection is ambiguous, ask one short clarification question using only the human-friendly request labels, not raw request_id
 
 After the user selects a request:
 - Run the quotes tool using that selected request_id
-- Replace `data` with the quote-selection mapping for that request so the next quote choice can be matched internally
+- Replace CURRENT AGENT VARIABLES.context with the quote-selection object for that request so the next quote choice can be matched internally
 - Show all real quotes for that request in one structured message
 - Include every quote one by one
 - For each quote include all available real fields from the tool response, including dealer info if present, status, created time, notes, and each quote item with part name, company, model, year, quantity, price, part type, and stock status
@@ -382,9 +385,9 @@ After the user selects a request:
 - Do not omit quote rows or item details that are present in the tool response
 - Keep the response structured and easy to read, but grounded only in actual returned data
 - If the user wants to order one of the quotes, first ask them to choose the quote using simple buttons like Quote 1, Quote 2, Quote 3
-- Match that choice using the saved `data` variable, not by asking for raw IDs
+- Match that choice using CURRENT AGENT VARIABLES.context, not by asking for raw ids
 - After the user chooses a quote, confirm the selected quote clearly before moving ahead
-- The selected quote may already include Request ID, Quote ID, and Dealer ID in the visible quote message; if so, save those values into variables before continuing
+- The selected quote may already include Request ID, Quote ID, and Dealer ID in the visible quote message; if so, save those values into CURRENT AGENT VARIABLES.context before continuing
 - After confirmation, call the create-order tool for that selected quote
 - The create-order tool should return a payment URL
 - Present that payment URL to the user and ask them to complete payment there
@@ -418,7 +421,7 @@ I can't see your order history right now.|Exit
 
 If user wants to order a quote:
 
-First confirm which quote they want to order using the current quote-selection data in `data`.
+First confirm which quote they want to order using the current quote-selection data in CURRENT AGENT VARIABLES.context.
 Show only the real selected quote.|Confirm Order,Cancel
 
 If user confirms the selected quote:
@@ -498,6 +501,7 @@ TOOL USAGE RULES:
 - Do not claim an external action succeeded unless a tool result clearly confirms it.
 - Do not invent missing user details.
 - Use CURRENT AGENT VARIABLES as the source of truth for user facts when available.
+- Use CURRENT AGENT VARIABLES.context as the source of truth for short-term operational memory.
 """
 
 
@@ -552,9 +556,8 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "When the user wants to see all quotes for a request, always call this first before asking anything else, so the user can choose which real request to inspect. "
         "List the requests briefly in a human-readable way and provide simple human-friendly selection buttons like Request 1, Request 2, Request 3. "
         "Do not show or ask for the raw request_id in the user-facing message. "
-        "Use the returned real request_id values only for internal selection state by matching the user's chosen request label and then saving the chosen request_id to CURRENT AGENT VARIABLES as request_id. "
-        "Also save all request mappings into CURRENT AGENT VARIABLES as all_requests in the format Request1,<id>;Request2,<id>;Request3,<id>. "
-        "Replace the CURRENT AGENT VARIABLES data field with the same currently relevant request-selection mapping. "
+        "Use the returned real request_id values only for internal selection state by matching the user's chosen request label and then saving the compact request-selection object into CURRENT AGENT VARIABLES.context. "
+        "Save only the minimal request list and ids needed for later matching; do not save the full raw response into CURRENT AGENT VARIABLES.context. "
         "Show each request's items, status, and quotes count to the user. "
         "Do not invent or summarize data that is not in the response."
     ),
@@ -569,10 +572,10 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
     "instructions": (
         "Use this tool to fetch all quotes for one selected request. "
         "Only call this after the user has selected one real request from their fetched request history. "
-        "Get request_id from CURRENT AGENT VARIABLES if it was already saved there. "
+        "Get request_id from CURRENT AGENT VARIABLES.context if it was already saved there. "
         "Do not ask the user for request_id and do not mention request_id in the user-facing reply. "
         "The response may be an array of quote objects, and each quote may contain quote_details as a JSON string. "
-        "Replace the CURRENT AGENT VARIABLES data field with the quote-selection mapping needed for the next quote choice. "
+        "Replace CURRENT AGENT VARIABLES.context with the compact quote-selection object needed for the next quote choice. "
         "Parse and present every returned quote and every returned quote item clearly. "
         "Do not skip fields that are present in the tool response."
     ),
@@ -589,8 +592,8 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
     "instructions": (
         "Use this tool after the user has chosen and confirmed a specific quote they want to order. "
         "Get mechanic_id from CURRENT AGENT VARIABLES. "
-        "Get quote_id and dealer_id from the selected quote details already shown in chat or saved in CURRENT AGENT VARIABLES. "
-        "If the selected quote message also showed Request ID, Quote ID, and Dealer ID, save those values before calling this tool. "
+        "Get quote_id and dealer_id from the selected quote details already shown in chat or saved in CURRENT AGENT VARIABLES.context. "
+        "If the selected quote message also showed Request ID, Quote ID, and Dealer ID, save those values into CURRENT AGENT VARIABLES.context before calling this tool. "
         "The tool returns an order/payment session with a URL. "
         "Present that URL to the user and tell them to complete payment there. "
         "Tell the user they will be notified once payment is successful and the order is created."
@@ -670,24 +673,21 @@ CRITICAL RULES:
 - Do not invent alternate menus, alternate labels, or alternate flows when a defined state exists
 - Render fixed templates in Hinglish while preserving their meaning and structure
 
-7. SHORT-TERM DATA VARIABLES
-- Use CURRENT AGENT VARIABLES for short-term selection state
-- Use the `manage_variables` tool immediately whenever some value will be needed later in the flow
-- Whenever the dealer is shown one or more selectable requests, quotes, orders, or other fetched/listed items that will be used in the next step, replace the `data` variable with the current mapping only
-- Use simple label-to-id mappings in `data`, for example:
-  `Request1,<request_id>;Request2,<request_id>`
-  `Order1,<order_id>;Order2,<order_id>`
-  `Quote1,<quote_id>;Quote2,<quote_id>`
-- Whenever requests are listed for quote submission, also save `all_requests` with the current request mapping
-- When the dealer chooses one item, match that label using `data`, then replace `data` again with the next currently relevant selection set if needed
-- Do not keep stale short-term selection data in `data`
-- Never ask the dealer for raw IDs
-- If relevant short-term IDs or mappings were shown in previous tool outputs or earlier chat and will be needed later, save them into CURRENT AGENT VARIABLES before continuing
-- Recover only relevant operational data like request, quote, or order mappings; do not save random chat text as variables
-- Do not only "remember" these values mentally; call `manage_variables` to save them as soon as they appear
-- If a new request broadcast is visible in recent chat and its request_id or request details are not yet saved, call `manage_variables` before asking the first quote question
-- Save the latest visible request into variables needed for later actions, including `request_id` and current request details in `data`
-- If a newer request broadcast appears later, replace the older request-related short-term variables with the newer request's data
+7. WORKING MEMORY IN CURRENT AGENT VARIABLES.context
+- CURRENT AGENT VARIABLES contains stable dealer facts plus one rotating object named `context`
+- The `context` object is the only working-memory area for request, quote, order, and selection data needed later in the flow
+- Stable dealer facts like dealer_id, phone, district, rating, totals, shop_name, and category are not working memory; do not overwrite them unless the dealer actually changes them
+- Use the `manage_variables` tool immediately whenever future-use operational data appears in the current message, recent chat, or a tool response
+- Save that operational data inside CURRENT AGENT VARIABLES under the key `context`
+- Save only minimal structured data needed for later steps, such as:
+  - active ids like request_id, quote_id, order_id, dealer_id
+  - numbered selection lists like Request 1, Quote 2, Order 3 with their ids
+  - brief request, quote, or order details needed for the next question or tool call
+- Do not save full raw tool responses, full message transcripts, or random chat text into `context`
+- When a newer request, quote, order, or selection checkpoint becomes the active one, replace the older `context` object with the newer relevant one instead of keeping stale data
+- Before asking a next-step question or calling a tool that depends on earlier fetched or visible data, first ensure CURRENT AGENT VARIABLES.context already contains the needed operational data; if it does not, call `manage_variables` first
+- If relevant ids or dynamic item details are already visible in recent chat or previous tool results and are needed later, save them into CURRENT AGENT VARIABLES.context before continuing
+- Never ask the dealer for raw ids if those ids are already available in chat or tool results
 
 ---
 
@@ -783,8 +783,7 @@ Show the request exactly as received from available data.
 Include: Mechanic name, Area, and all parts with Part Name, Company, Model, Year, Qty.
 Do not invent or modify any field.
 Do not show the internal request_id to the dealer.
-Immediately call `manage_variables` to save the request's request_id as `request_id` for later actions on that request.
-Also call `manage_variables` to replace `data` with the current request mapping and current request details for this broadcast, and save `all_requests` if multiple requests are currently listed.
+Immediately call `manage_variables` to save the current request's minimal working-memory object inside CURRENT AGENT VARIABLES.context for later actions on that request.
 
 Format:
 
@@ -804,12 +803,11 @@ Kya aapke paas hai?|Send Quote,Ignore
 
 If dealer taps Send Quote or says they want to quote:
 
-Before continuing, use `manage_variables` to save the selected request's internal request_id into CURRENT AGENT VARIABLES using `request_id`.
-Use that saved `request_id` for all later quote submission actions.
-Use the current `data` / `all_requests` mapping to resolve the dealer's selected request label when needed.
-If the latest visible request broadcast in recent chat has not yet been saved, call `manage_variables` first to save that request_id and current request details before asking for price.
-If the saved request variables belong to an older request and a newer broadcast is now visible, replace the old values with the latest request's values before continuing.
-Do not ask the first price question until the current request's id and relevant request details are saved in variables.
+Before continuing, ensure CURRENT AGENT VARIABLES.context contains the currently active request's minimal working-memory object.
+Use that saved request context for all later quote submission actions.
+If the latest visible request broadcast in recent chat has not yet been saved, call `manage_variables` first to save that request context before asking for price.
+If the saved request context belongs to an older request and a newer broadcast is now active, replace the old context object with the latest request's context before continuing.
+Do not ask the first price question until the current request's id and relevant request details are saved inside CURRENT AGENT VARIABLES.context.
 
 Collect required fields one at a time.
 Do not confirm early.
@@ -889,7 +887,7 @@ Kuch update karna hai ya continue karein?|Update,Confirm,Cancel
 If dealer taps Confirm after quote preview:
 
 → Call the submit quote tool
-→ Replace `data` with whatever next short-term mapping is relevant after quote submission, if any
+→ Replace CURRENT AGENT VARIABLES.context with whatever next short-term operational context is relevant after quote submission, if any
 
 Aapka request bhej diya gaya hai! Agar order milta hai toh delivery agent pickup ke liye aayega. Order deliver aur okay mark hone ke 24 ghante ke andar payment mil jayega.|Main Menu
 
@@ -1025,7 +1023,7 @@ If dealer asks for Order History:
 If orders are available:
 List only real orders from available data.
 For each order show: Part details, Price, Status (Delivered/Cancelled/In Progress).
-If the dealer can select one of those orders in the next step, replace `data` with the current order-selection mapping.
+If the dealer can select one of those orders in the next step, replace CURRENT AGENT VARIABLES.context with the current order-selection object.
 
 If orders are not available:
 Abhi aapki order history nahi dikh rahi.|Exit
@@ -1041,7 +1039,7 @@ List only real live requests in the dealer's district from available data.
 For each request show: Part Name, Company, Model, Year, Qty, time since posted.
 
 Number each request.
-Save `all_requests` and replace `data` with the current request-selection mapping before asking the dealer to choose.
+Save the compact current request-selection object into CURRENT AGENT VARIABLES.context before asking the dealer to choose.
 
 Kaunse par quote bhejenge?|{numbered options},Main Menu
 
@@ -1099,7 +1097,7 @@ If dealer asks about their sent quotes or quote history:
 If quotes data is available:
 List only real quotes from available data.
 For each quote show: Part details, Price quoted, Status (Accepted/Not Selected/Pending).
-If the dealer can select one of those quotes in the next step, replace `data` with the current quote-selection mapping.
+If the dealer can select one of those quotes in the next step, replace CURRENT AGENT VARIABLES.context with the current quote-selection object.
 
 If quotes data is not available:
 Abhi aapki quotes history nahi dikh rahi.|Exit
@@ -1226,8 +1224,9 @@ TOOL USAGE RULES:
 - Do not claim an external action succeeded unless a tool result clearly confirms it.
 - Do not invent missing dealer details.
 - Use CURRENT AGENT VARIABLES as the source of truth for dealer facts when available.
-- Whenever future-use operational data appears in previous tool outputs or earlier chat, call `manage_variables` immediately to save it before continuing.
-- Before asking quote-entry questions for a request, ensure the latest visible request's id and relevant request details are already saved in variables.
+- Use CURRENT AGENT VARIABLES.context as the source of truth for short-term operational memory.
+- Whenever future-use operational data appears in previous tool outputs or earlier chat, call `manage_variables` immediately to save it into CURRENT AGENT VARIABLES.context before continuing.
+- Before asking quote-entry questions for a request, ensure the latest visible request's id and relevant request details are already saved inside CURRENT AGENT VARIABLES.context.
 
 
 """
@@ -1252,10 +1251,10 @@ SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
         "part_name, company, model, year, quantity, price, part_type (Genuine/OEM/1st Copy/2nd Copy), "
         "and stock_status (Available/Arrange Karna Padega). "
         "Get dealer_id, dealer_rating, and district from CURRENT AGENT VARIABLES. "
-        "Get request_id from CURRENT AGENT VARIABLES. "
-        "Use the CURRENT AGENT VARIABLES data field when recent short-term request selection data is needed before submit. "
-        "The agent should use manage_variables to store that variable as soon as the dealer selects the request they want to quote on. "
-        "Before quote submission, the latest visible request's id and relevant request details must already be saved in CURRENT AGENT VARIABLES. "
+        "Get request_id from CURRENT AGENT VARIABLES.context. "
+        "Use CURRENT AGENT VARIABLES.context when recent short-term request selection data is needed before submit. "
+        "The agent should use manage_variables to store that request context object as soon as the dealer selects or sees the request they want to quote on. "
+        "Before quote submission, the latest visible request's id and relevant request details must already be saved in CURRENT AGENT VARIABLES.context. "
         "Do not ask the dealer for request_id and do not show it in the user-facing reply."
     ),
     "when_run": "When dealer clicks Confirm on the quote confirmation prompt and the quote should be submitted.",
@@ -1290,23 +1289,32 @@ def get_active_agent_config() -> Dict[str, Any]:
 # ============================================================
 class ManageVariablesArgs(BaseModel):
     model_config = ConfigDict(extra="allow")
-    updates: Optional[Dict[str, str]] = None
+    updates: Optional[Dict[str, Any]] = None
 
 
 # Runtime variable store (per-request, reset each call)
-_CURRENT_AGENT_VARIABLES: Dict[str, str] = {}
+_CURRENT_AGENT_VARIABLES: Dict[str, Any] = {}
 
 
-def manage_variables(updates: Optional[Dict[str, str]] = None, **kwargs: Any) -> Any:
+def _deep_merge_values(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    for key, value in incoming.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge_values(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def manage_variables(updates: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Any:
     """Save, update, or create variables in agent memory for later turns."""
     global _CURRENT_AGENT_VARIABLES
-    merged: Dict[str, str] = {}
+    merged: Dict[str, Any] = {}
     if isinstance(updates, dict):
         merged.update(updates)
     for k, v in (kwargs or {}).items():
-        merged[str(k)] = "" if v is None else str(v)
+        merged[str(k)] = v
 
-    _CURRENT_AGENT_VARIABLES.update(merged)
+    _deep_merge_values(_CURRENT_AGENT_VARIABLES, merged)
     return {"variables": merged}
 
 
@@ -1315,10 +1323,12 @@ MANAGE_VARIABLES_TOOL = StructuredTool.from_function(
     name="manage_variables",
     description=(
         "Use this tool immediately to save, update, or replace variables that will be needed later in the flow. "
-        "Whenever request IDs, quote IDs, order IDs, request mappings, quote mappings, checkout mappings, "
-        "or other relevant short-term operational data appear in previous tool outputs or earlier chat and will be used further, "
-        "save them in CURRENT AGENT VARIABLES instead of relying on memory alone. "
-        "Do not save random chat text; save only relevant operational data."
+        "CURRENT AGENT VARIABLES has stable profile fields plus one rotating object named context. "
+        "Save future-use operational data inside CURRENT AGENT VARIABLES.context. "
+        "Whenever request IDs, quote IDs, order IDs, selection lists, request details, quote details, order details, "
+        "or other relevant short-term operational data appear in the current message, recent chat, or tool output and will be used later, "
+        "save a minimal structured version of that data in CURRENT AGENT VARIABLES.context instead of relying on memory alone. "
+        "Do not save random chat text or full raw tool responses."
     ),
     args_schema=ManageVariablesArgs,
 )
@@ -1340,44 +1350,6 @@ def _is_valid_api_url(u: str) -> bool:
         return p.scheme in ("http", "https") and bool(p.netloc)
     except Exception:
         return False
-
-
-def _extract_response_list(tool_result: Any) -> List[Dict[str, Any]]:
-    if isinstance(tool_result, list):
-        return [item for item in tool_result if isinstance(item, dict)]
-    if isinstance(tool_result, dict):
-        response = tool_result.get("response")
-        if isinstance(response, list):
-            return [item for item in response if isinstance(item, dict)]
-    return []
-
-
-def _update_short_term_variables_from_tool(tool_name: str, response_data: Any) -> None:
-    global _CURRENT_AGENT_VARIABLES
-    items = _extract_response_list(response_data)
-    if not items:
-        return
-
-    if tool_name == "fetch_request_history":
-        mappings: List[str] = []
-        for idx, item in enumerate(items, start=1):
-            request_id = item.get("id") or item.get("request_id")
-            if request_id:
-                mappings.append(f"Request{idx},{request_id}")
-        if mappings:
-            joined = ";".join(mappings)
-            _CURRENT_AGENT_VARIABLES["all_requests"] = joined
-            _CURRENT_AGENT_VARIABLES["data"] = joined
-        return
-
-    if tool_name == "fetch_request_quotes":
-        mappings = []
-        for idx, item in enumerate(items, start=1):
-            quote_id = item.get("id") or item.get("quote_id")
-            if quote_id:
-                mappings.append(f"Quote{idx},{quote_id}")
-        if mappings:
-            _CURRENT_AGENT_VARIABLES["data"] = ";".join(mappings)
 
 
 def build_static_tools(static_tool_configs: List[Dict[str, Any]]) -> List[StructuredTool]:
@@ -1424,6 +1396,8 @@ def build_static_tools(static_tool_configs: List[Dict[str, Any]]) -> List[Struct
                 global _CURRENT_AGENT_VARIABLES
                 if _name == "fetch_request_quotes" and not payload.get("request_id"):
                     saved_request_id = _CURRENT_AGENT_VARIABLES.get("request_id")
+                    if not saved_request_id and isinstance(_CURRENT_AGENT_VARIABLES.get("context"), dict):
+                        saved_request_id = _CURRENT_AGENT_VARIABLES["context"].get("request_id")
                     if saved_request_id:
                         payload["request_id"] = saved_request_id
                 payload["context_variables"] = dict(_CURRENT_AGENT_VARIABLES)
@@ -1435,8 +1409,6 @@ def build_static_tools(static_tool_configs: List[Dict[str, Any]]) -> List[Struct
                         response_data = resp.json()
                     except Exception:
                         response_data = resp.text
-
-                    _update_short_term_variables_from_tool(_name, response_data)
 
                     return json.dumps({
                         "ok": bool(resp.ok),
@@ -1745,6 +1717,8 @@ def run_agent(
     initial_vars = dict(context_vars)
     if isinstance(variables, dict):
         initial_vars.update(variables)
+    if not isinstance(initial_vars.get("context"), dict):
+        initial_vars["context"] = {}
     _CURRENT_AGENT_VARIABLES = dict(initial_vars)
 
     # Build tools
