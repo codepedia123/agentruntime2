@@ -139,6 +139,8 @@ CRITICAL RULES:
 7. STRICT STATE COMPLIANCE
 - Follow the fixed messages, menus, and buttons in this prompt exactly wherever applicable
 - If the conversation enters one of the defined states below, use that state response
+- Interpret generic replies like Confirm, Cancel, OK, and numeric/star ratings using the latest relevant previous assistant message/state, not as a global action
+- If the latest relevant previous assistant message asks the user to rate a dealer and contains `Dealer ID:`, then a reply like `4 ⭐⭐⭐⭐` or `4 ⭐⭐⭐⭐\nGood` is a dealer rating response
 - If user taps or says Exit, send the Main Menu message
 - Do not invent alternate menus, alternate labels, or alternate flows when a defined state exists
 - Render fixed templates in Hinglish while preserving their meaning and structure
@@ -451,7 +453,39 @@ Show only the real current status.|OK
 
 ---
 
-11. EXIT / FALLBACK RESPONSE
+11. DEALER RATING
+
+When the latest relevant previous assistant message asks the mechanic to rate a dealer and contains:
+`Dealer ID: {dealer_id}`
+
+And the user replies with a rating like:
+`4 ⭐⭐⭐⭐`
+or:
+`4 ⭐⭐⭐⭐
+Good`
+
+Then:
+→ Extract the numeric rating from the current user message
+→ Extract dealer_id from the latest rating prompt's `Dealer ID:` line
+→ If dealer_id or rating are missing, ask only for the missing value
+→ Call the rate dealer tool with:
+   id = extracted dealer_id
+   rating = numeric rating
+→ After the tool succeeds, reply:
+
+Rating submit ho gayi. Dhanyavaad!|Main Menu
+
+If the tool fails:
+Rating submit nahi ho paayi. Thodi der baad try karein.|Main Menu
+
+Do not ask the user for Dealer ID if it is already visible in the latest rating prompt.
+Do not treat this message as a part request.
+
+---
+
+---
+
+12. EXIT / FALLBACK RESPONSE
 
 If Exit is pressed or the user says Exit:
 Send the Main Menu message exactly.
@@ -502,6 +536,7 @@ TOOL USAGE RULES:
 - Do not invent missing user details.
 - Use CURRENT AGENT VARIABLES as the source of truth for user facts when available.
 - Use CURRENT AGENT VARIABLES.context as the source of truth for short-term operational memory.
+- For dealer rating, if the latest relevant previous assistant message asks to rate a dealer and includes Dealer ID, extract dealer_id from that message and numeric rating from the current user reply, then call the rate dealer tool.
 """
 
 
@@ -599,6 +634,23 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Tell the user they will be notified once payment is successful and the order is created."
     ),
     "when_run": "When the user confirms the quote they want to order and the app should create the order payment session.",
+},
+    {
+    "name": "rate_dealer",
+    "api_url": "https://dnskvumoyqalsrbcyyjy.supabase.co/functions/v1/rate-dealer",
+    "payload_template": {
+        "id": "",
+        "rating": "",
+    },
+    "instructions": (
+        "Use this tool only when the mechanic replies with a dealer rating and the latest relevant previous assistant message asks them to rate a dealer. "
+        "Extract id from the latest rating prompt's `Dealer ID:` line. "
+        "Extract rating as the numeric value from the user's current reply, for example `4 ⭐⭐⭐⭐` means rating 4. "
+        "The rating must be a number from 1 to 5. "
+        "Do not ask for Dealer ID if it is visible in the latest rating prompt. "
+        "After the tool succeeds, thank the user and return Main Menu."
+    ),
+    "when_run": "When the mechanic sends a star/numeric rating after a dealer rating prompt that contains Dealer ID.",
 }
 ]
 
