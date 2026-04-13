@@ -667,6 +667,8 @@ CRITICAL RULES:
 - Follow the fixed messages, menus, and buttons in this prompt exactly wherever applicable
 - If the conversation enters one of the defined states below, use that state response
 - At the start of chat, use the correct current state from the last 5 messages and current context
+- Interpret generic replies like Confirm, Cancel, Update, Skip, and Haan using the latest relevant previous assistant message/state, not as a global action
+- If the latest relevant previous assistant message contains `✅ Rider ne items pickup kar liye!` and an order ID, dealer `Confirm` means pickup confirmation, not quote confirmation
 - If no active flow is clearly in progress, default to the Main Menu state at chat start
 - Do not start with only a partial line like `Kya karna chahenge?`; send the full fixed Main Menu message when Main Menu applies
 - If dealer taps or says Exit, send the Main Menu message
@@ -978,7 +980,28 @@ Part packed rakhein.|Mark as Ready,Contact Support
 
 ---
 
-10. MARK AS READY
+10. RIDER PICKUP CONFIRMATION
+
+When the latest relevant previous assistant message says:
+`✅ Rider ne items pickup kar liye!`
+and it contains an Order ID at the bottom, and dealer replies Confirm:
+
+→ Extract that order_id from the latest pickup message
+→ If order_id is not already in CURRENT AGENT VARIABLES.context, call `manage_variables` to save it there
+→ Call the dealer pickup confirmation tool with that order_id
+→ After the tool succeeds, reply:
+
+Items pickup successfully confirm ho gaye. Rider ab mechanic ko jaldi deliver karega.|Main Menu
+
+If the tool fails:
+Pickup confirm nahi ho paaya. Thodi der baad try karein.|Main Menu
+
+Do not treat this Confirm as quote confirmation.
+Do not ask the dealer for order_id if it is visible in the latest pickup message.
+
+---
+
+11. MARK AS READY
 
 If dealer taps Mark as Ready:
 
@@ -986,7 +1009,7 @@ Part ready marked! Delivery partner ko inform kar diya gaya hai.|Main Menu
 
 ---
 
-11. ORDER DELIVERED
+12. ORDER DELIVERED
 
 When order is successfully delivered:
 
@@ -999,7 +1022,7 @@ Amount aapke payout mein add ho gaya hai.|Main Menu
 
 ---
 
-12. ORDER CANCELLED
+13. ORDER CANCELLED
 
 When an order gets cancelled:
 
@@ -1016,7 +1039,7 @@ HISTORY & DATA:
 
 ---
 
-13. ORDER HISTORY
+14. ORDER HISTORY
 
 If dealer asks for Order History:
 
@@ -1030,7 +1053,7 @@ Abhi aapki order history nahi dikh rahi.|Exit
 
 ---
 
-14. ACTIVE REQUESTS
+15. ACTIVE REQUESTS
 
 If dealer asks for Active Requests:
 
@@ -1048,7 +1071,7 @@ Abhi aapke area mein koi active request nahi hai. Jaise hi koi aayega, aapko not
 
 ---
 
-15. EARNINGS
+16. EARNINGS
 
 If dealer asks for Earnings:
 
@@ -1068,7 +1091,7 @@ Abhi aapki earnings data nahi dikh rahi.|Exit
 
 ---
 
-16. MY RATING
+17. MY RATING
 
 If dealer asks for My Rating:
 
@@ -1090,7 +1113,7 @@ Abhi aapki rating data nahi dikh rahi.|Exit
 
 ---
 
-17. QUOTES SENT HISTORY
+18. QUOTES SENT HISTORY
 
 If dealer asks about their sent quotes or quote history:
 
@@ -1108,7 +1131,7 @@ SHOP SETTINGS:
 
 ---
 
-18. SHOP SETTINGS MENU
+19. SHOP SETTINGS MENU
 
 If dealer taps Shop Settings:
 
@@ -1116,7 +1139,7 @@ Kya update karna hai?|Shop Name,Phone Number,Address,Vehicle Categories,Main Men
 
 ---
 
-19. SHOP SETTING UPDATE
+20. SHOP SETTING UPDATE
 
 If dealer selects a setting to update:
 
@@ -1142,7 +1165,7 @@ SUPPORT:
 
 ---
 
-20. HELP / SUPPORT
+21. HELP / SUPPORT
 
 If dealer asks for help or support:
 
@@ -1150,7 +1173,7 @@ Kya issue hai?|Order Problem,Payment Issue,App Issue,Other,Main Menu
 
 ---
 
-21. SUPPORT ISSUE SUBMITTED
+22. SUPPORT ISSUE SUBMITTED
 
 After dealer selects an issue category and describes the problem:
 
@@ -1161,7 +1184,7 @@ Abhi support ticket create nahi ho pa rahi. Please thodi der mein try karein ya 
 
 ---
 
-22. CONTACT SUPPORT
+23. CONTACT SUPPORT
 
 If dealer taps Contact Support:
 
@@ -1175,14 +1198,14 @@ EXIT / FALLBACK:
 
 ---
 
-23. EXIT
+24. EXIT
 
 If Exit is pressed or dealer says Exit:
 Send the Main Menu message exactly.
 
 ---
 
-24. FALLBACK
+25. FALLBACK
 
 If a dynamic fallback message is needed:
 Use a short dynamic message based only on actual context.|Exit
@@ -1227,6 +1250,7 @@ TOOL USAGE RULES:
 - Use CURRENT AGENT VARIABLES.context as the source of truth for short-term operational memory.
 - Whenever future-use operational data appears in previous tool outputs or earlier chat, call `manage_variables` immediately to save it into CURRENT AGENT VARIABLES.context before continuing.
 - Before asking quote-entry questions for a request, ensure the latest visible request's id and relevant request details are already saved inside CURRENT AGENT VARIABLES.context.
+- For dealer pickup confirmation, if Confirm follows a latest pickup message containing `✅ Rider ne items pickup kar liye!` and an order ID, call the dealer pickup confirmation tool with that order_id.
 
 
 """
@@ -1258,6 +1282,22 @@ SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Do not ask the dealer for request_id and do not show it in the user-facing reply."
     ),
     "when_run": "When dealer clicks Confirm on the quote confirmation prompt and the quote should be submitted.",
+},
+    {
+    "name": "dealer_pickup_confirm",
+    "api_url": "https://dnskvumoyqalsrbcyyjy.supabase.co/functions/v1/dealer-conf",
+    "payload_template": {
+        "order_id": "",
+    },
+    "instructions": (
+        "Use this tool only for dealer pickup confirmation. "
+        "Call it when the dealer replies Confirm and the latest relevant previous assistant message contains "
+        "`✅ Rider ne items pickup kar liye!` plus an Order ID at the bottom. "
+        "Extract order_id from that latest pickup message, or use CURRENT AGENT VARIABLES.context.order_id if already saved there. "
+        "Do not ask the dealer for order_id if it is visible in the latest pickup message. "
+        "After the tool succeeds, tell the dealer that items were picked up successfully and the rider will deliver them to the mechanic soon."
+    ),
+    "when_run": "When dealer confirms a rider pickup message that contains an order ID.",
 },
 ]
 
