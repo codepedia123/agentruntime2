@@ -76,11 +76,11 @@ def main_cli() -> int:
     api_key = args.api_key or os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
 
     result = runtime.run_agent(
-        context=context,
-        conversation=conversation,
-        user_message=args.message,
-        variables=variables,
-        api_key=api_key,
+        context,
+        conversation,
+        args.message,
+        variables,
+        api_key,
     )
 
     json.dump(result, sys.stdout, ensure_ascii=False)
