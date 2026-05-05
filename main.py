@@ -249,8 +249,9 @@ After the user selects a request:
 - After the user chooses a quote, confirm the selected quote clearly before moving ahead
 - The selected quote may already include Request ID, Quote ID, and Dealer ID in the visible quote message; if so, save them into current_request_id, current_quote_id, and current_dealer_id before continuing
 - After confirmation, call the create-order tool for that selected quote
-- The create-order tool should return a payment URL
-- Present that payment URL to the user and ask them to complete payment there
+- The create-order tool should return a payment URL and may return an amount
+- Present that payment URL to the user and include the returned amount if present
+- Mention in Hinglish: "Is amount mein delivery aur platform fees included hain. Discount is amount mein exclude hai; order complete hone ke 1 din ke andar discount automatically receive ho jayega."
 - Tell the user they will be notified as soon as payment is successful and the order is created
 
 If no requests are available:
@@ -278,14 +279,18 @@ Show only the real selected quote.|Confirm Order,Cancel
 If user confirms the selected quote:
 → Call the create-order tool
 → Use the selected quote's Quote ID, Request ID, Dealer ID, and CURRENT AGENT VARIABLES mechanic_id
-→ Present the returned payment link to the user and tell them to complete payment there
+→ Present the returned payment link and returned amount if present
+→ Mention: Is amount mein delivery aur platform fees included hain. Discount is amount mein exclude hai; order complete hone ke 1 din ke andar discount automatically receive ho jayega.
 → Tell the user they will be notified when payment succeeds and the order is created
 
 ---
 
 After create-order succeeds:
 
+Amount: ₹{amount}
 Complete payment here: {payment_url}
+
+Is amount mein delivery aur platform fees included hain. Discount is amount mein exclude hai; order complete hone ke 1 din ke andar discount automatically receive ho jayega.
 
 Payment successful hote hi aapko notification mil jayega aur order create ho jayega.|OK
 
@@ -595,8 +600,9 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Get mechanic_id from CURRENT AGENT VARIABLES. "
         "Get quote_id from CURRENT AGENT VARIABLES.context.current_quote_id and dealer_id from CURRENT AGENT VARIABLES.context.current_dealer_id. "
         "If the latest previous assistant message is a new quote received message with one quote and the user accepts it, save that message's Request ID, Quote ID, and Dealer ID into current_request_id, current_quote_id, and current_dealer_id before showing selected quote confirmation. "
-        "The tool returns an order/payment session with a URL. "
-        "Present that URL to the user and tell them to complete payment there. "
+        "The tool returns an order/payment session with a URL and may include an amount. "
+        "Present that URL to the user and include the returned amount if present. "
+        "Also say in Hinglish: Is amount mein delivery aur platform fees included hain. Discount is amount mein exclude hai; order complete hone ke 1 din ke andar discount automatically receive ho jayega. "
         "Tell the user they will be notified once payment is successful and the order is created."
     ),
     "when_run": "When the user confirms the quote they want to order and the app should create the order payment session.",
@@ -2231,10 +2237,6 @@ class ManageVariablesArgs(BaseModel):
     model_config = ConfigDict(extra="allow")
     updates: Optional[Dict[str, Any]] = None
 
-
-# Runtime variable store (per-request, reset each call)
-_CURRENT_AGENT_VARIABLES: Dict[str, Any] = {}
-
 # Best-effort per-process checkpoint store. Use Redis/Postgres for multi-worker production.
 _THREAD_VARIABLE_STORE: Dict[str, Dict[str, Any]] = {}
 _THREAD_STATE_STORE: Dict[str, str] = {}
@@ -2709,10 +2711,13 @@ def _context_lookup(variables: Dict[str, Any], key: str) -> Any:
     return None
 
 
-def _fill_payload_from_context(tool_name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    global _CURRENT_AGENT_VARIABLES
-    _CURRENT_AGENT_VARIABLES = _normalize_variables(_CURRENT_AGENT_VARIABLES)
-    context = _CURRENT_AGENT_VARIABLES.get("context", {})
+def _fill_payload_from_context(
+    tool_name: str,
+    payload: Dict[str, Any],
+    current_variables: Dict[str, Any],
+) -> Dict[str, Any]:
+    current_variables = _normalize_variables(current_variables)
+    context = current_variables.get("context", {})
 
     def fill(field: str, value: Any) -> None:
         if field in payload and payload.get(field) in (None, "") and value not in (None, ""):
@@ -2720,13 +2725,13 @@ def _fill_payload_from_context(tool_name: str, payload: Dict[str, Any]) -> Dict[
 
     if tool_name == "submit_quote":
         fill("request_id", context.get("current_request_id"))
-        fill("dealer_id", _CURRENT_AGENT_VARIABLES.get("dealer_id"))
-        fill("dealer_rating", _CURRENT_AGENT_VARIABLES.get("dealer_rating") or _CURRENT_AGENT_VARIABLES.get("rating"))
-        fill("district", _CURRENT_AGENT_VARIABLES.get("district"))
+        fill("dealer_id", current_variables.get("dealer_id"))
+        fill("dealer_rating", current_variables.get("dealer_rating") or current_variables.get("rating"))
+        fill("district", current_variables.get("district"))
     elif tool_name == "create_order":
         fill("quote_id", context.get("current_quote_id"))
         fill("dealer_id", context.get("current_dealer_id"))
-        fill("mechanic_id", _CURRENT_AGENT_VARIABLES.get("mechanic_id") or context.get("current_mechanic_id"))
+        fill("mechanic_id", current_variables.get("mechanic_id") or context.get("current_mechanic_id"))
     elif tool_name == "dealer_pickup_confirm":
         fill("order_id", context.get("current_order_id"))
     elif tool_name == "rate_dealer":
@@ -2734,11 +2739,11 @@ def _fill_payload_from_context(tool_name: str, payload: Dict[str, Any]) -> Dict[
     elif tool_name == "fetch_request_quotes":
         fill("request_id", context.get("current_request_id"))
     elif tool_name == "fetch_request_history":
-        fill("id", _CURRENT_AGENT_VARIABLES.get("mechanic_id") or context.get("current_mechanic_id"))
+        fill("id", current_variables.get("mechanic_id") or context.get("current_mechanic_id"))
     else:
         for key in ("request_id", "quote_id", "order_id", "dealer_id", "mechanic_id", "district", "dealer_rating"):
             if key in payload and payload.get(key) in (None, ""):
-                value = _context_lookup(_CURRENT_AGENT_VARIABLES, key)
+                value = _context_lookup(current_variables, key)
                 if value not in (None, ""):
                     payload[key] = value
 
@@ -2749,56 +2754,74 @@ def _fill_payload_from_context(tool_name: str, payload: Dict[str, Any]) -> Dict[
     return payload
 
 
-def manage_variables(updates: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Any:
-    """Save, update, or create variables in agent memory for later turns."""
-    global _CURRENT_AGENT_VARIABLES
-    merged: Dict[str, Any] = {}
-    if isinstance(updates, dict):
-        merged.update(updates)
-    for k, v in (kwargs or {}).items():
-        merged[str(k)] = v
-
-    _deep_merge_values(_CURRENT_AGENT_VARIABLES, merged)
-    _CURRENT_AGENT_VARIABLES = _normalize_variables(_CURRENT_AGENT_VARIABLES)
-    return {"variables": _normalize_variables(merged)}
+def _apply_variable_updates(current_variables: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
+    working = _safe_deepcopy(current_variables if isinstance(current_variables, dict) else {})
+    _deep_merge_values(working, updates if isinstance(updates, dict) else {})
+    return _normalize_variables(working)
 
 
-MANAGE_VARIABLES_TOOL = StructuredTool.from_function(
-    func=manage_variables,
-    name="manage_variables",
-    description=(
-        "Use this tool immediately to save, update, or replace variables that will be needed later in the flow. "
-        "CURRENT AGENT VARIABLES.context is a strict schema with only these short-term fields: "
-        "current_request_id, current_quote_id, current_order_id, current_dealer_id, current_mechanic_id, "
-        "current_items, current_selection_map, current_flow, current_notes, current_totals. "
-        "Save typed IDs only into their matching current_* fields. "
-        "Save fetched DB/request/quote/order item details only into current_items or current_selection_map. "
-        "Do not create loose keys such as request_id, quote_id, order_id, dealer_id, last_seen_ids, quote_draft, data, or all_requests inside context. "
-        "Do not save random chat text or full raw tool responses."
-    ),
-    args_schema=ManageVariablesArgs,
-)
+def build_manage_variables_tool(request_state: Dict[str, Any]) -> StructuredTool:
+    """Build a request-local manage_variables tool bound to this invocation."""
+    def manage_variables_local(updates: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Any:
+        merged: Dict[str, Any] = {}
+        if isinstance(updates, dict):
+            merged.update(updates)
+        for k, v in (kwargs or {}).items():
+            merged[str(k)] = v
+
+        request_state["variables"] = _apply_variable_updates(request_state.get("variables", {}), merged)
+        return {"variables": _normalize_variables(merged)}
+
+    return StructuredTool.from_function(
+        func=manage_variables_local,
+        name="manage_variables",
+        description=(
+            "Use this tool immediately to save, update, or replace variables that will be needed later in the flow. "
+            "CURRENT AGENT VARIABLES.context is a strict schema with only these short-term fields: "
+            "current_request_id, current_quote_id, current_order_id, current_dealer_id, current_mechanic_id, "
+            "current_items, current_selection_map, current_flow, current_notes, current_totals. "
+            "Save typed IDs only into their matching current_* fields. "
+            "Save fetched DB/request/quote/order item details only into current_items or current_selection_map. "
+            "Do not create loose keys such as request_id, quote_id, order_id, dealer_id, last_seen_ids, quote_draft, data, or all_requests inside context. "
+            "Do not save random chat text or full raw tool responses."
+        ),
+        args_schema=ManageVariablesArgs,
+    )
 
 
-# ============================================================
-# TOOL FACTORY - builds StructuredTools from STATIC_TOOLS
-# ============================================================
-def _safe_json_loads(s: str) -> Optional[Any]:
-    try:
-        return json.loads(s)
-    except Exception:
-        return None
+def _log_tool_identity_check(
+    tool_name: str,
+    request_state: Dict[str, Any],
+    current_vars: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> None:
+    if tool_name not in {"create_part_request", "create_order", "fetch_request_history", "fetch_request_quotes", "submit_quote"}:
+        return
+
+    context_variables = payload.get("context_variables") if isinstance(payload.get("context_variables"), dict) else {}
+    identity_snapshot = {
+        "tool": tool_name,
+        "thread_id": request_state.get("thread_id"),
+        "current_mechanic_id": current_vars.get("mechanic_id"),
+        "payload_mechanic_id": payload.get("mechanic_id"),
+        "payload_phone": context_variables.get("phone"),
+        "payload_user_name": context_variables.get("user_name"),
+    }
+    print(f"[TOOL IDENTITY CHECK] {json.dumps(identity_snapshot, ensure_ascii=False)}")
+
+    if tool_name == "create_part_request":
+        current_mechanic_id = current_vars.get("mechanic_id")
+        payload_mechanic_id = payload.get("mechanic_id")
+        if current_mechanic_id not in (None, "") and payload_mechanic_id not in (None, "") and str(current_mechanic_id) != str(payload_mechanic_id):
+            raise ValueError(
+                f"Identity mismatch before {tool_name}: current mechanic_id={current_mechanic_id} payload mechanic_id={payload_mechanic_id}"
+            )
 
 
-def _is_valid_api_url(u: str) -> bool:
-    try:
-        p = urllib.parse.urlparse(u)
-        return p.scheme in ("http", "https") and bool(p.netloc)
-    except Exception:
-        return False
-
-
-def build_static_tools(static_tool_configs: List[Dict[str, Any]]) -> List[StructuredTool]:
+def build_static_tools(
+    static_tool_configs: List[Dict[str, Any]],
+    request_state: Dict[str, Any],
+) -> List[StructuredTool]:
     """Convert static tool config into LangChain StructuredTool objects."""
     tools: List[StructuredTool] = []
 
@@ -2838,10 +2861,10 @@ def build_static_tools(static_tool_configs: List[Dict[str, Any]]) -> List[Struct
                         "event_id": event_id,
                     })
 
-                # Inject current variables as context
-                global _CURRENT_AGENT_VARIABLES
-                payload = _fill_payload_from_context(_name, payload)
-                payload["context_variables"] = dict(_CURRENT_AGENT_VARIABLES)
+                current_vars = _normalize_variables(request_state.get("variables", {}))
+                payload = _fill_payload_from_context(_name, payload, current_vars)
+                payload["context_variables"] = _safe_deepcopy(current_vars)
+                _log_tool_identity_check(_name, request_state, current_vars, payload)
 
                 try:
                     resp = requests.post(_url, json=payload, timeout=20)
@@ -2912,6 +2935,7 @@ def _get_state_tool_names(port: Optional[int] = None) -> Dict[str, List[str]]:
 def _build_tools_for_active_state(
     active_config: Dict[str, Any],
     active_state: str,
+    request_state: Dict[str, Any],
     port: Optional[int] = None,
 ) -> List[StructuredTool]:
     target_port = port or PORT
@@ -2924,7 +2948,9 @@ def _build_tools_for_active_state(
             if cfg.get("name") in allowed_names
         ]
 
-    return [MANAGE_VARIABLES_TOOL] + build_static_tools(static_tool_configs)
+    manage_tool = build_manage_variables_tool(request_state)
+    static_tools = build_static_tools(static_tool_configs, request_state)
+    return [manage_tool] + static_tools
 
 
 # ============================================================
@@ -3351,7 +3377,7 @@ def run_agent(
     Returns:
         {"reply": "...", "context": {...}, "state": "..."}
     """
-    global _CURRENT_AGENT_VARIABLES, _THREAD_VARIABLE_STORE, _THREAD_STATE_STORE
+    global _THREAD_VARIABLE_STORE, _THREAD_STATE_STORE
     active_config = get_active_agent_config()
     active_state = "menu"
 
@@ -3378,20 +3404,23 @@ def run_agent(
     if isinstance(variables, dict):
         _deep_merge_values(initial_vars, _normalize_variables_patch(variables))
     initial_vars = _normalize_variables(initial_vars)
-    _CURRENT_AGENT_VARIABLES = _normalize_variables(initial_vars)
+    request_state = {
+        "thread_id": thread_id,
+        "variables": _normalize_variables(initial_vars),
+    }
 
     # Convert conversation to messages
     msgs = _to_messages(context, conversation_history, message)
-    _CURRENT_AGENT_VARIABLES = _hydrate_variables_from_messages(_CURRENT_AGENT_VARIABLES, msgs)
+    request_state["variables"] = _hydrate_variables_from_messages(request_state["variables"], msgs)
 
     if PORT in (8001, 8002):
         current_state = _resolve_current_state(context, variables, thread_id=thread_id)
         active_state = _classify_state_with_llm(msgs, resolved_api_key, current_state=current_state)
-    _CURRENT_AGENT_VARIABLES["current_state"] = active_state
+    request_state["variables"]["current_state"] = active_state
     _THREAD_STATE_STORE[thread_id] = active_state
 
     # Build tools
-    all_tools = _build_tools_for_active_state(active_config, active_state)
+    all_tools = _build_tools_for_active_state(active_config, active_state, request_state)
 
     # Build LLM
     llm = ChatOpenAI(
@@ -3418,7 +3447,7 @@ def run_agent(
             state_modifier=system_prompt,
         )
 
-    runtime_context_msg = _build_runtime_context_message(dict(_CURRENT_AGENT_VARIABLES))
+    runtime_context_msg = _build_runtime_context_message(_safe_deepcopy(request_state["variables"]))
     if runtime_context_msg is not None:
         msgs = [runtime_context_msg] + msgs
 
@@ -3446,7 +3475,7 @@ def run_agent(
             reply_text = f"Error: {str(ge)}"
         reply_text = _sanitize_reply_text(_safe_content_to_str(reply_text))
         fallback_vars = _hydrate_variables_from_messages(
-            dict(_CURRENT_AGENT_VARIABLES),
+            _safe_deepcopy(request_state["variables"]),
             msgs + [AIMessage(content=reply_text)],
         )
         fallback_state = _normalize_state_name(fallback_vars.get("current_state")) or active_state
@@ -3470,7 +3499,7 @@ def run_agent(
     except Exception as e:
         error_reply = _sanitize_reply_text(f"Error: {str(e)}")
         error_vars = _hydrate_variables_from_messages(
-            dict(_CURRENT_AGENT_VARIABLES),
+            _safe_deepcopy(request_state["variables"]),
             msgs + [AIMessage(content=error_reply)],
         )
         error_state = _normalize_state_name(error_vars.get("current_state")) or active_state
@@ -3518,7 +3547,7 @@ def run_agent(
             _deep_merge_values(final_vars, _normalize_variables_patch(state["variables"]))
     except Exception:
         pass
-    _deep_merge_values(final_vars, _normalize_variables_patch(_CURRENT_AGENT_VARIABLES))
+    _deep_merge_values(final_vars, _normalize_variables_patch(_safe_deepcopy(request_state["variables"])))
 
     final_messages = out_msgs if isinstance(out_msgs, list) and out_msgs else msgs + [AIMessage(content=reply_text)]
     final_vars = _hydrate_variables_from_messages(final_vars, final_messages)
