@@ -2556,6 +2556,21 @@ def _extract_quote_details_from_preview(text: str) -> List[Dict[str, Any]]:
     return details
 
 
+def _safe_json_loads(s: str) -> Optional[Any]:
+    try:
+        return json.loads(s)
+    except Exception:
+        return None
+
+
+def _is_valid_api_url(u: str) -> bool:
+    try:
+        p = urllib.parse.urlparse(u)
+        return p.scheme in ("http", "https") and bool(p.netloc)
+    except Exception:
+        return False
+
+
 def _extract_financial_summary_from_preview(text: str) -> Dict[str, Any]:
     summary: Dict[str, Any] = {}
     gross = re.search(r"Gross Total\s*:\s*₹?\s*([0-9]+(?:\.[0-9]+)?)", text or "", flags=re.IGNORECASE)
