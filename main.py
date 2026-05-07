@@ -224,15 +224,17 @@ If requests are available:
 - Always do this request-list step first before fetching quotes
 - Before replying with the list, save request options into CURRENT AGENT VARIABLES.context.current_selection_map
 - List the real requests in a brief human-readable way using this style:
-  {brand} {bike_model} {year} - {items_summary}
+  Request 1 [{REQUEST_PREFIX}] - {brand} {bike_model} {year} - {items_summary}
+- `REQUEST_PREFIX` means the first 8 characters of the real request_id, preferably shown in uppercase, for example: FD264944
 - Do not show or ask for raw request_id in the user-facing message
 - Show simple human-friendly selection buttons only, for example:
-  Request 1, Request 2, Request 3
+  Request 1 FD264944, Request 2 A91C220B, Request 3 77EF1012
 - Ask clearly which request they want to see all quotes for
 - Do not skip this selection step unless the user has already selected one specific request
-- Use CURRENT AGENT VARIABLES.context.current_selection_map to match which listed request the user is referring to
+- Use CURRENT AGENT VARIABLES.context.current_selection_map plus the visible 8-character prefix to match which listed request the user is referring to
 - When the user selects one of the listed requests, save the matched id into CURRENT AGENT VARIABLES.context.current_request_id and relevant item details into CURRENT AGENT VARIABLES.context.current_items
-- If the user's selection is ambiguous, ask one short clarification question using only the human-friendly request labels, not raw request_id
+- If the user's selection is ambiguous, reverse-search the visible prefix against previous request messages in chat and the saved selection map
+- If more than one request is still possible, ask one short clarification question using only the human-friendly request labels with prefixes, not raw request_id
 
 After the user selects a request:
 - Run the quotes tool using that selected request_id
@@ -240,12 +242,15 @@ After the user selects a request:
 - Show all real quotes for that request in one structured message
 - Include every quote one by one
 - For each quote include all available real fields from the tool response, including dealer info if present, status, created time, notes, and each quote item with part name, company, model, year, quantity, price, part type, and stock status
+- For each quote also show a visible quote prefix using the first 8 characters of the real quote_id, for example: Quote 1 [FD264944]
 - If `quote_details` comes as a JSON string, parse it and present all items clearly
 - Do not omit quote rows or item details that are present in the tool response
 - Keep the response structured and easy to read, but grounded only in actual returned data
-- If the user wants to order one of the quotes, first ask them to choose the quote using simple buttons like Quote 1, Quote 2, Quote 3
+- If the user wants to order one of the quotes, first ask them to choose the quote using simple buttons like Quote 1 FD264944, Quote 2 A91C220B, Quote 3 77EF1012
 - Exception: if the latest previous assistant message is a new quote received message and already shows or contains one specific Quote ID plus Dealer ID and Request ID, and the user replies with accept quote / accept / order / book / confirm intent, do not ask them to choose a quote; use that visible quote directly
-- Match that choice using CURRENT AGENT VARIABLES.context.current_selection_map, not by asking for raw ids
+- Match that choice using CURRENT AGENT VARIABLES.context.current_selection_map and the visible 8-character prefix, not by asking for raw ids
+- If the user says something vague like `accept quote` and more than one quote is available in recent chat or saved selection data, do not guess
+- In that case, list all available quotes again with a brief overview plus their visible prefixes and ask them to choose one specific quote button
 - After the user chooses a quote, confirm the selected quote clearly before moving ahead
 - The selected quote may already include Request ID, Quote ID, and Dealer ID in the visible quote message; if so, save them into current_request_id, current_quote_id, and current_dealer_id before continuing
 - After confirmation, call the create-order tool for that selected quote
@@ -272,6 +277,16 @@ If the latest previous assistant message is a new quote received message with ex
 - Do not ask the user to select Quote 1 / Quote 2 / Quote 3
 - Do not ask the user for raw Quote ID, Request ID, or Dealer ID
 - Continue directly to selected quote confirmation
+
+Otherwise, if more than one quote is visible in recent chat or saved selection data:
+- Do not guess which quote the user means
+- Re-list all available quotes briefly with their visible 8-character quote-id prefixes
+- Example style:
+  Quote 1 [FD264944] - Chain Kit x 2, OEM, Haan Available
+  Quote 2 [A91C220B] - Chain Kit x 2, 1st Copy, Arrange Karna Padega
+- Show buttons like:
+  Quote 1 FD264944, Quote 2 A91C220B, Cancel
+- Reverse-search the chosen prefix against previous quote messages and CURRENT AGENT VARIABLES.context.current_selection_map to find the real quote_id
 
 Otherwise, first confirm which quote they want to order using CURRENT AGENT VARIABLES.context.current_selection_map.
 Show only the real selected quote.|Confirm Order,Cancel
@@ -560,9 +575,10 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "The 'id' field is the mechanic_id from CURRENT AGENT VARIABLES. "
         "Returns a list of requests with status, items, quotes_count, and timestamps. "
         "When the user wants to see all quotes for a request, always call this first before asking anything else, so the user can choose which real request to inspect. "
-        "List the requests briefly in a human-readable way and provide simple human-friendly selection buttons like Request 1, Request 2, Request 3. "
+        "List the requests briefly in a human-readable way and include a visible 8-character request-id prefix from the real request_id, for example FD264944. "
+        "Provide simple human-friendly selection buttons like Request 1 FD264944, Request 2 A91C220B, Request 3 77EF1012. "
         "Do not show or ask for the raw request_id in the user-facing message. "
-        "Use the returned real request_id values only for internal selection state. Save mappings into CURRENT AGENT VARIABLES.context.current_selection_map, and save the chosen request into CURRENT AGENT VARIABLES.context.current_request_id. "
+        "Use the returned real request_id values only for internal selection state. Save mappings including the visible prefix into CURRENT AGENT VARIABLES.context.current_selection_map, and save the chosen request into CURRENT AGENT VARIABLES.context.current_request_id. "
         "Save only the minimal request list and ids needed for later matching; do not save the full raw response. "
         "Show each request's items, status, and quotes count to the user. "
         "Do not invent or summarize data that is not in the response."
@@ -581,7 +597,8 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Get request_id from CURRENT AGENT VARIABLES.context.current_request_id if it was already saved there. "
         "Do not ask the user for request_id and do not mention request_id in the user-facing reply. "
         "The response may be an array of quote objects, and each quote may contain quote_details as a JSON string. "
-        "Save quote selection options into CURRENT AGENT VARIABLES.context.current_selection_map and selected/fetched quote items into CURRENT AGENT VARIABLES.context.current_items as needed. "
+        "For each quote, show and save a visible 8-character quote-id prefix from the real quote_id, for example FD264944. "
+        "Save quote selection options including the visible prefix into CURRENT AGENT VARIABLES.context.current_selection_map and selected/fetched quote items into CURRENT AGENT VARIABLES.context.current_items as needed. "
         "Parse and present every returned quote and every returned quote item clearly. "
         "Do not skip fields that are present in the tool response."
     ),
@@ -600,6 +617,7 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Get mechanic_id from CURRENT AGENT VARIABLES. "
         "Get quote_id from CURRENT AGENT VARIABLES.context.current_quote_id and dealer_id from CURRENT AGENT VARIABLES.context.current_dealer_id. "
         "If the latest previous assistant message is a new quote received message with one quote and the user accepts it, save that message's Request ID, Quote ID, and Dealer ID into current_request_id, current_quote_id, and current_dealer_id before showing selected quote confirmation. "
+        "If multiple quotes are visible and the user only says something vague like accept quote, do not guess; first make them choose a quote using a visible 8-character quote-id prefix and match that prefix back to the real quote_id from previous chat or saved selection data. "
         "The tool returns an order/payment session with a URL and may include an amount. "
         "Present that URL to the user and include the returned amount if present. "
         "Also say in Hinglish: Is amount mein delivery aur platform fees included hain. Discount is amount mein exclude hai; order complete hone ke 1 din ke andar discount automatically receive ho jayega. "
@@ -841,6 +859,10 @@ Use that saved request context for all later quote submission actions.
 If the latest visible request broadcast in recent chat has not yet been saved, call `manage_variables` first to fill current_request_id and current_items before asking for price.
 If current_request_id belongs to an older request and a newer broadcast is now active, replace current_request_id and current_items with the latest request before continuing.
 Do not ask the first price question until current_request_id and relevant current_items are saved.
+If the dealer clicked or typed a request-prefixed selector like `Send Quote FD264944`, reverse-search that 8-character prefix against previous request messages in chat and CURRENT AGENT VARIABLES.context.current_selection_map, then save the matched full request id into current_request_id before continuing.
+If the dealer only says something vague like `Send Quote` and more than one unresolved request is visible in recent chat or saved selection data, do not guess.
+Instead, list all visible candidate requests briefly with their 8-character request-id prefixes and ask the dealer to choose one specific request button, for example:
+Request 1 FD264944, Request 2 A91C220B, Main Menu
 
 Collect quote details part-by-part.
 Do not confirm early.
@@ -1410,6 +1432,7 @@ Include: Mechanic name, Area, and all parts with Part Name, Company, Model, Year
 Do not invent or modify any field.
 Do not show the internal request_id to the dealer.
 Immediately call `manage_variables` to fill CURRENT AGENT VARIABLES.context.current_request_id and current_items for later actions on that request.
+Also show a visible request prefix using the first 8 characters of the real request_id, preferably uppercase, for example: FD264944.
 
 Format:
 
@@ -1417,11 +1440,12 @@ Format:
 
 Mechanic: {mechanic_name}
 Area: {district}
+Request Ref: {REQUEST_PREFIX}
 
 {List each part with Part Name, Company, Model, Year, Qty}
 
 
-Kya aapke paas hai?|Send Quote,Ignore
+Kya aapke paas hai?|Send Quote FD264944,Ignore
 
 ---
 
@@ -1623,23 +1647,24 @@ For the request list view:
   - short overview of remaining parts, for example: `+ 2 more parts`
   - company / model / year if available
   - time since posted
+- Also show a visible request prefix using the first 8 characters of the real request_id, preferably uppercase
 - Example style:
-  `Request 1: Chain Kit - Hero Splendor Plus 2022 (+ 2 more parts)`
+  `Request 1 [FD264944]: Chain Kit - Hero Splendor Plus 2022 (+ 2 more parts)`
 
 Number each real request.
 Save the compact current request-selection map into CURRENT AGENT VARIABLES.context.current_selection_map before asking the dealer to choose.
 
 Ask:
-Kaunse request ki details dekhni hain?|Request 1,Request 2,Main Menu
+Kaunse request ki details dekhni hain?|Request 1 FD264944,Request 2 A91C220B,Main Menu
 
 When dealer selects a request:
-- Match it to the saved request id from CURRENT AGENT VARIABLES.context.current_selection_map, then save it into current_request_id
+- Match it to the saved request id from CURRENT AGENT VARIABLES.context.current_selection_map and the visible prefix, then save it into current_request_id
 - Keep the state as active_requests
 - Show full details of that ONE selected request only
 - In the detailed view, list ALL parts of that request with Part Name, Company, Model, Year, Qty
 - Do not collapse the detailed view
 - After showing full request details, ask:
-  `Is request par kya karna hai?|Send Quote,View All Quotes,Main Menu`
+  `Is request par kya karna hai?|Send Quote FD264944,View All Quotes FD264944,Main Menu`
 
 If dealer taps Send Quote:
 - Use the already selected request from CURRENT AGENT VARIABLES.context.current_request_id and current_items
@@ -2556,6 +2581,118 @@ def _extract_quote_details_from_preview(text: str) -> List[Dict[str, Any]]:
     return details
 
 
+def _uuid_prefix(value: Any) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()[:8]
+
+
+def _extract_visible_prefix(text: str, label: str) -> Optional[str]:
+    match = re.search(rf"{re.escape(label)}\s*:\s*([A-Za-z0-9]{{8}})", text or "", flags=re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
+def _extract_request_items_from_broadcast(text: str) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+
+    for raw_line in (text or "").splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        numbered_match = re.match(r"^\d+\.\s+(.+)$", stripped)
+        if numbered_match:
+            if current:
+                items.append(_normalize_item(current))
+            current = {"part_name": numbered_match.group(1).strip()}
+            continue
+
+        if current is None:
+            continue
+
+        field_match = re.match(r"^(Company|Model|Year|Qty|Quantity|Variant|Details)\s*:\s*(.+)$", stripped, flags=re.IGNORECASE)
+        if not field_match:
+            continue
+
+        field_name = field_match.group(1).strip().lower()
+        field_value = field_match.group(2).strip()
+        if field_name == "company":
+            current["company"] = field_value
+        elif field_name == "model":
+            current["model"] = field_value
+        elif field_name == "year":
+            current["year"] = field_value
+        elif field_name in ("qty", "quantity"):
+            current["quantity"] = field_value
+        elif field_name == "variant":
+            current["notes"] = (current.get("notes", "") + f"Variant: {field_value}").strip()
+        elif field_name == "details":
+            prior = current.get("notes", "")
+            current["notes"] = f"{prior}\nDetails: {field_value}".strip() if prior else f"Details: {field_value}"
+
+    if current:
+        items.append(_normalize_item(current))
+    return items
+
+
+def _extract_selection_candidates_from_text(text: str) -> List[Dict[str, Any]]:
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    candidates: List[Dict[str, Any]] = []
+
+    request_id = _extract_labeled_uuid(text, "Request ID")
+    request_prefix = _extract_visible_prefix(text, "Request Ref") or (_uuid_prefix(request_id) if request_id else None)
+    if request_id and request_prefix:
+        request_items = _extract_request_items_from_broadcast(text)
+        summary = ""
+        if request_items:
+            first = request_items[0]
+            more = len(request_items) - 1
+            first_name = str(first.get("part_name") or "Request").strip()
+            qty = str(first.get("quantity") or "").strip()
+            summary = f"{first_name} x {qty}".strip()
+            if more > 0:
+                summary = f"{summary}, + {more} more parts"
+        candidates.append({
+            "type": "request",
+            "id": str(request_id),
+            "request_id": str(request_id),
+            "prefix": request_prefix,
+            "label": f"Request {request_prefix}",
+            "summary": summary,
+            "items": request_items,
+        })
+
+    quote_id = _extract_labeled_uuid(text, "Quote ID")
+    quote_prefix = _extract_visible_prefix(text, "Quote Ref") or (_uuid_prefix(quote_id) if quote_id else None)
+    if quote_id and quote_prefix:
+        quote_items = _extract_quote_details_from_preview(text)
+        dealer_id = _extract_labeled_uuid(text, "Dealer ID")
+        linked_request_id = _extract_labeled_uuid(text, "Request ID")
+        summary = ""
+        if quote_items:
+            first = quote_items[0]
+            first_name = str(first.get("part_name") or "Quote").strip()
+            price = str(first.get("price") or "").strip()
+            summary = f"{first_name}"
+            if price:
+                summary += f" - ₹{price}"
+        candidates.append({
+            "type": "quote",
+            "id": str(quote_id),
+            "quote_id": str(quote_id),
+            "request_id": str(linked_request_id) if linked_request_id else "",
+            "dealer_id": str(dealer_id) if dealer_id else "",
+            "prefix": quote_prefix,
+            "label": f"Quote {quote_prefix}",
+            "summary": summary,
+            "items": [_normalize_item(item) for item in quote_items],
+        })
+
+    return candidates
+
+
 def _safe_json_loads(s: str) -> Optional[Any]:
     try:
         return json.loads(s)
@@ -2674,6 +2811,24 @@ def _extract_context_patch_from_text(text: str) -> Dict[str, Any]:
             context_patch[key] = value
             found = True
 
+    selection_map = context_patch.setdefault("current_selection_map", {})
+    for candidate in _extract_selection_candidates_from_text(text):
+        entry = {
+            "id": candidate.get("id", ""),
+            "type": candidate.get("type", ""),
+            "label": candidate.get("label", ""),
+            "summary": candidate.get("summary", ""),
+            "prefix": candidate.get("prefix", ""),
+        }
+        for key in ("request_id", "quote_id", "order_id", "dealer_id", "mechanic_id"):
+            if candidate.get(key):
+                entry[key] = candidate.get(key)
+        selection_map[str(candidate.get("label") or candidate.get("prefix") or candidate.get("id"))] = entry
+        found = True
+
+    if not selection_map:
+        context_patch.pop("current_selection_map", None)
+
     quote_details = _extract_quote_details_from_preview(text)
     if quote_details:
         context_patch["current_items"] = [_normalize_item(item) for item in quote_details]
@@ -2697,6 +2852,96 @@ def _hydrate_variables_from_messages(variables: Dict[str, Any], messages: List[B
             _deep_merge_values(hydrated, patch)
             hydrated = _normalize_variables(hydrated)
     return _normalize_variables(hydrated)
+
+
+def _resolve_prefixed_selection_from_messages(variables: Dict[str, Any], messages: List[BaseMessage]) -> Dict[str, Any]:
+    resolved = _normalize_variables(variables)
+    context = resolved.setdefault("context", _blank_context())
+
+    recent_human = next(
+        (
+            _safe_content_to_str(getattr(message, "content", ""))
+            for message in reversed(messages or [])
+            if isinstance(message, HumanMessage) and not _is_runtime_context_message(message)
+        ),
+        "",
+    )
+    prefixes = [match.upper() for match in re.findall(r"\b([A-Za-z0-9]{8})\b", recent_human or "")]
+    if not prefixes:
+        return resolved
+
+    requested_type = ""
+    lowered = (recent_human or "").lower()
+    if any(token in lowered for token in ("accept", "order", "book", "confirm")):
+        requested_type = "quote"
+    elif any(token in lowered for token in ("send", "quote bhej", "send quote")):
+        requested_type = "request"
+
+    candidates: List[Dict[str, Any]] = []
+    selection_map = context.get("current_selection_map")
+    if isinstance(selection_map, dict):
+        for label, entry in selection_map.items():
+            if not isinstance(entry, dict):
+                continue
+            candidate = {
+                "type": entry.get("type") or ("quote" if entry.get("quote_id") else "request" if entry.get("request_id") else ""),
+                "id": entry.get("id") or entry.get("quote_id") or entry.get("request_id") or entry.get("order_id") or "",
+                "request_id": entry.get("request_id") or "",
+                "quote_id": entry.get("quote_id") or "",
+                "dealer_id": entry.get("dealer_id") or "",
+                "prefix": str(entry.get("prefix") or ""),
+                "label": str(entry.get("label") or label),
+                "summary": str(entry.get("summary") or ""),
+            }
+            if not candidate["prefix"]:
+                candidate["prefix"] = _uuid_prefix(candidate["id"] or candidate["request_id"] or candidate["quote_id"])
+            candidates.append(candidate)
+
+    for message in messages or []:
+        if _is_runtime_context_message(message):
+            continue
+        candidates.extend(_extract_selection_candidates_from_text(_safe_content_to_str(getattr(message, "content", ""))))
+
+    deduped: Dict[str, Dict[str, Any]] = {}
+    for candidate in candidates:
+        candidate_type = str(candidate.get("type") or "").strip().lower()
+        candidate_id = str(candidate.get("id") or candidate.get("request_id") or candidate.get("quote_id") or "").strip()
+        candidate_prefix = str(candidate.get("prefix") or _uuid_prefix(candidate_id)).strip().upper()
+        if not candidate_type or not candidate_id or not candidate_prefix:
+            continue
+        candidate["type"] = candidate_type
+        candidate["id"] = candidate_id
+        candidate["prefix"] = candidate_prefix
+        deduped[f"{candidate_type}:{candidate_id}"] = candidate
+
+    all_candidates = list(deduped.values())
+
+    for prefix in prefixes:
+        matches = [candidate for candidate in all_candidates if candidate.get("prefix") == prefix]
+        if requested_type:
+            typed_matches = [candidate for candidate in matches if candidate.get("type") == requested_type]
+            if len(typed_matches) == 1:
+                matches = typed_matches
+        if len(matches) != 1:
+            continue
+
+        match = matches[0]
+        if match["type"] == "request":
+            context["current_request_id"] = match["request_id"] or match["id"]
+            if isinstance(match.get("items"), list) and match["items"]:
+                context["current_items"] = [_normalize_item(item) for item in match["items"] if isinstance(item, dict)]
+        elif match["type"] == "quote":
+            context["current_quote_id"] = match["quote_id"] or match["id"]
+            if match.get("request_id"):
+                context["current_request_id"] = match["request_id"]
+            if match.get("dealer_id"):
+                context["current_dealer_id"] = match["dealer_id"]
+            if isinstance(match.get("items"), list) and match["items"]:
+                context["current_items"] = [_normalize_item(item) for item in match["items"] if isinstance(item, dict)]
+        break
+
+    resolved["context"] = _normalize_context(context)
+    return _normalize_variables(resolved)
 
 
 def _context_lookup(variables: Dict[str, Any], key: str) -> Any:
@@ -3427,6 +3672,7 @@ def run_agent(
     # Convert conversation to messages
     msgs = _to_messages(context, conversation_history, message)
     request_state["variables"] = _hydrate_variables_from_messages(request_state["variables"], msgs)
+    request_state["variables"] = _resolve_prefixed_selection_from_messages(request_state["variables"], msgs)
 
     if PORT in (8001, 8002):
         current_state = _resolve_current_state(context, variables, thread_id=thread_id)
