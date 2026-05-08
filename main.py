@@ -232,7 +232,7 @@ If requests are available:
 - Ask clearly which request they want to see all quotes for
 - Do not skip this selection step unless the user has already selected one specific request
 - Use CURRENT AGENT VARIABLES.context.current_selection_map plus the visible 8-character prefix to match which listed request the user is referring to
-- When the user selects one of the listed requests, save the matched id into CURRENT AGENT VARIABLES.context.current_request_id and relevant item details into CURRENT AGENT VARIABLES.context.current_items
+- When the user selects one of the listed requests, save the matched id into CURRENT AGENT VARIABLES.context.current_request_id and refresh CURRENT AGENT VARIABLES.context.current_items from that same selected request message or matched request record
 - If the user's selection is ambiguous, reverse-search the visible prefix against previous request messages in chat and the saved selection map
 - If more than one request is still possible, ask one short clarification question using only the human-friendly request labels with prefixes, not raw request_id
 
@@ -252,7 +252,7 @@ After the user selects a request:
 - If the user says something vague like `accept quote` and more than one quote is available in recent chat or saved selection data, do not guess
 - In that case, list all available quotes again with a brief overview plus their visible prefixes and ask them to choose one specific quote button
 - After the user chooses a quote, confirm the selected quote clearly before moving ahead
-- The selected quote may already include Request ID, Quote ID, and Dealer ID in the visible quote message; if so, save them into current_request_id, current_quote_id, and current_dealer_id before continuing
+- The selected quote may already include Request ID, Quote ID, Dealer ID, and quote item details in the visible quote message; if so, save them into current_request_id, current_quote_id, current_dealer_id, and current_items before continuing
 - After confirmation, call the create-order tool for that selected quote
 - The create-order tool should return a payment URL and may return an amount
 - Present that payment URL to the user and include the returned amount if present
@@ -1432,6 +1432,7 @@ Include: Mechanic name, Area, and all parts with Part Name, Company, Model, Year
 Do not invent or modify any field.
 Do not show the internal request_id to the dealer.
 Immediately call `manage_variables` to fill CURRENT AGENT VARIABLES.context.current_request_id and current_items for later actions on that request.
+The current_items must come from this same request message itself, not from any older request or older quote draft.
 Also show a visible request prefix using the first 8 characters of the real request_id, preferably uppercase, for example: FD264944.
 
 Format:
@@ -1465,6 +1466,7 @@ Before continuing, ensure CURRENT AGENT VARIABLES.context.current_request_id and
 Use that saved request context for all later quote submission actions.
 If the latest visible request broadcast in recent chat has not yet been saved, call `manage_variables` first to fill current_request_id and current_items before asking for price.
 If current_request_id belongs to an older request and a newer broadcast is now active, replace current_request_id and current_items with the latest request before continuing.
+Whenever the dealer selects a new request by prefix or button, refresh current_items from that same selected request message or matched request record immediately. Do not keep older parts from a previous request.
 Do not ask the first price question until current_request_id and relevant current_items are saved.
 
 Collect quote details part-by-part.
@@ -2812,7 +2814,8 @@ def _extract_context_patch_from_text(text: str) -> Dict[str, Any]:
             found = True
 
     selection_map = context_patch.setdefault("current_selection_map", {})
-    for candidate in _extract_selection_candidates_from_text(text):
+    extracted_candidates = _extract_selection_candidates_from_text(text)
+    for candidate in extracted_candidates:
         entry = {
             "id": candidate.get("id", ""),
             "type": candidate.get("type", ""),
@@ -2828,6 +2831,32 @@ def _extract_context_patch_from_text(text: str) -> Dict[str, Any]:
 
     if not selection_map:
         context_patch.pop("current_selection_map", None)
+
+    request_candidates = [candidate for candidate in extracted_candidates if candidate.get("type") == "request"]
+    if len(request_candidates) == 1:
+        request_candidate = request_candidates[0]
+        if request_candidate.get("request_id"):
+            context_patch["current_request_id"] = str(request_candidate["request_id"])
+            found = True
+        if isinstance(request_candidate.get("items"), list) and request_candidate["items"]:
+            context_patch["current_items"] = [_normalize_item(item) for item in request_candidate["items"] if isinstance(item, dict)]
+            found = True
+
+    quote_candidates = [candidate for candidate in extracted_candidates if candidate.get("type") == "quote"]
+    if len(quote_candidates) == 1:
+        quote_candidate = quote_candidates[0]
+        if quote_candidate.get("quote_id"):
+            context_patch["current_quote_id"] = str(quote_candidate["quote_id"])
+            found = True
+        if quote_candidate.get("request_id"):
+            context_patch["current_request_id"] = str(quote_candidate["request_id"])
+            found = True
+        if quote_candidate.get("dealer_id"):
+            context_patch["current_dealer_id"] = str(quote_candidate["dealer_id"])
+            found = True
+        if isinstance(quote_candidate.get("items"), list) and quote_candidate["items"]:
+            context_patch["current_items"] = [_normalize_item(item) for item in quote_candidate["items"] if isinstance(item, dict)]
+            found = True
 
     quote_details = _extract_quote_details_from_preview(text)
     if quote_details:
