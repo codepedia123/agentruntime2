@@ -54,6 +54,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4.1")
 PORT = int(os.getenv("PORT", "8001"))
 OPENAI_BASE_URL = "https://api.openai.com/v1"
+CHAT_FRONTEND_BASE_URL = os.getenv("CHAT_FRONTEND_BASE_URL", "https://admirable-squirrel-bfad61.netlify.app/")
 
 
 # ============================================================
@@ -1446,7 +1447,14 @@ Request Ref: {REQUEST_PREFIX}
 {List each part with Part Name, Company, Model, Year, Qty}
 
 
-Kya aapke paas hai?|Send Quote FD264944,Ignore
+Kya aapke paas hai?|Send Quote FD264944,Ignore,Chat FD264944
+
+If dealer taps Chat FD264944 or says they want to chat for that request:
+- Reverse-match the visible request prefix to the full request id
+- Ensure CURRENT AGENT VARIABLES.context.current_request_id points to that request
+- Call the chat_create_or_open tool
+- After success, send the dealer_link_url and tell the dealer in Hinglish to open that link to chat with the mechanic
+- If chat cannot be opened, say so briefly and ask them to try again
 
 ---
 
@@ -1666,11 +1674,17 @@ When dealer selects a request:
 - In the detailed view, list ALL parts of that request with Part Name, Company, Model, Year, Qty
 - Do not collapse the detailed view
 - After showing full request details, ask:
-  `Is request par kya karna hai?|Send Quote FD264944,View All Quotes FD264944,Main Menu`
+  `Is request par kya karna hai?|Send Quote FD264944,View All Quotes FD264944,Chat FD264944,Main Menu`
 
 If dealer taps Send Quote:
 - Use the already selected request from CURRENT AGENT VARIABLES.context.current_request_id and current_items
 - Transition to quote_flow
+
+If dealer taps Chat FD264944:
+- Use the already selected request from CURRENT AGENT VARIABLES.context.current_request_id
+- Call the chat_create_or_open tool
+- After success, send the dealer_link_url and tell the dealer in Hinglish to open that link to chat with the mechanic
+- If chat cannot be opened, say so briefly and keep the selected request active
 
 If dealer taps View All Quotes:
 - Stay in active_requests state
@@ -2161,10 +2175,10 @@ No explanation. No punctuation. Just the state name."""
 
 DEALER_STATE_TOOLS: Dict[str, List[str]] = {
     "menu": [],
-    "incoming_request": [],
+    "incoming_request": ["chat_create_or_open"],
     "quote_flow": [],
     "quote_confirmation": ["submit_quote"],
-    "active_requests": [],
+    "active_requests": ["chat_create_or_open"],
     "order_received": [],
     "pickup_notification": [],
     "pickup_confirmation": ["dealer_pickup_confirm"],
@@ -2184,6 +2198,30 @@ DEALER_STATE_TOOLS: Dict[str, List[str]] = {
 
 
 SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
+    {
+    "name": "chat_create_or_open",
+    "api_url": "https://dnskvumoyqalsrbcyyjy.supabase.co/functions/v1/chat-create-or-open",
+    "payload_template": {
+        "request_id": "",
+        "dealer_id": "",
+        "base_url": "",
+        "created_by_role": "dealer",
+    },
+    "instructions": (
+        "Use this tool when the dealer chooses Chat for a selected request, for example `Chat FD264944`. "
+        "This tool creates or reuses one internal request-linked chat between the selected dealer, the request's mechanic, and that request. "
+        "Get request_id from CURRENT AGENT VARIABLES.context.current_request_id. "
+        "Get dealer_id from CURRENT AGENT VARIABLES dealer_id. "
+        "Get base_url from system configuration. "
+        "Set created_by_role to `dealer` unless another role is explicitly required. "
+        "Do not ask the dealer for raw ids if the request has already been selected by prefix or button. "
+        "If multiple requests are visible and the dealer says only `Chat` without a clear prefix or selection, do not guess; first ask them to choose the request using the visible request prefix buttons. "
+        "On success, parse and store chat_id, dealer_link_url, mechanic_link_url, and expiry timestamps if available. "
+        "After success, reply with the dealer_link_url in a short Hinglish message telling the dealer to open that link to chat with the mechanic. "
+        "If the tool fails, reply briefly that chat open nahi ho paaya and ask them to try again."
+    ),
+    "when_run": "When dealer chooses Chat for a selected request and the system should create or open the internal request chat.",
+},
     {
     "name": "submit_quote",
     "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/send-quote",
@@ -3017,6 +3055,11 @@ def _fill_payload_from_context(
         fill("dealer_id", current_variables.get("dealer_id"))
         fill("dealer_rating", current_variables.get("dealer_rating") or current_variables.get("rating"))
         fill("district", current_variables.get("district"))
+    elif tool_name == "chat_create_or_open":
+        fill("request_id", context.get("current_request_id"))
+        fill("dealer_id", current_variables.get("dealer_id"))
+        fill("base_url", CHAT_FRONTEND_BASE_URL)
+        fill("created_by_role", "dealer")
     elif tool_name == "create_order":
         fill("quote_id", context.get("current_quote_id"))
         fill("dealer_id", context.get("current_dealer_id"))
