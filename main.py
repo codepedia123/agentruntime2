@@ -54,7 +54,6 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4.1")
 PORT = int(os.getenv("PORT", "8001"))
 OPENAI_BASE_URL = "https://api.openai.com/v1"
-CHAT_FRONTEND_BASE_URL = os.getenv("CHAT_FRONTEND_BASE_URL", "https://admirable-squirrel-bfad61.netlify.app/")
 
 
 # ============================================================
@@ -247,7 +246,9 @@ After the user selects a request:
 - If `quote_details` comes as a JSON string, parse it and present all items clearly
 - Do not omit quote rows or item details that are present in the tool response
 - Keep the response structured and easy to read, but grounded only in actual returned data
+- Also offer a Call action using the visible quote prefix, for example `Call FD264944`, when a specific quote is shown and the quote id is known
 - If the user wants to order one of the quotes, first ask them to choose the quote using simple buttons like Quote 1 FD264944, Quote 2 A91C220B, Quote 3 77EF1012
+- If the user chooses `Call FD264944`, reverse-match that visible prefix to the real quote_id, save it into current_quote_id, call the resolve_chat_phone tool with quote_id, and return the dealer's phone number and shop name
 - Exception: if the latest previous assistant message is a new quote received message and already shows or contains one specific Quote ID plus Dealer ID and Request ID, and the user replies with accept quote / accept / order / book / confirm intent, do not ask them to choose a quote; use that visible quote directly
 - Match that choice using CURRENT AGENT VARIABLES.context.current_selection_map and the visible 8-character prefix, not by asking for raw ids
 - If the user says something vague like `accept quote` and more than one quote is available in recent chat or saved selection data, do not guess
@@ -271,6 +272,13 @@ I can't see any quotes for your request yet.""",
         "prompt": r"""9. ORDER FLOW
 
 If user wants to order a quote:
+
+If the latest previous assistant message is a new quote received message with a visible quote prefix and the user says `Call FD264944` or similar:
+- Reverse-match that visible prefix to the real quote_id
+- Save the matched full quote id into CURRENT AGENT VARIABLES.context.current_quote_id
+- Call the resolve_chat_phone tool with quote_id
+- After success, return the dealer's phone number and shop name in a short Hinglish reply
+- If contact details cannot be resolved, say so briefly and ask them to try again
 
 If the latest previous assistant message is a new quote received message with exactly one quote and it contains Quote ID plus Dealer ID and Request ID:
 - Treat user replies like `accept quote`, `accept`, `order`, `book`, `yes`, `haan`, or `confirm` as selecting that quote
@@ -604,6 +612,24 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Do not skip fields that are present in the tool response."
     ),
     "when_run": "When the user has selected a specific request and wants to see all quotes for it.",
+},
+    {
+    "name": "resolve_chat_phone",
+    "api_url": "https://dnskvumoyqalsrbcyyjy.supabase.co/functions/v1/resolve-chat-phone",
+    "payload_template": {
+        "request_id": "",
+        "quote_id": "",
+    },
+    "instructions": (
+        "Use this tool only to resolve the contact phone number and shop name tied to a request or quote. "
+        "Pass exactly one of request_id or quote_id, never both. "
+        "For the mechanic agent, when the mechanic chooses Call for a selected quote or a new quote received message, pass only quote_id from CURRENT AGENT VARIABLES.context.current_quote_id. "
+        "Do not ask the mechanic for raw ids if the quote has already been selected by prefix or button. "
+        "If multiple quotes are visible and the mechanic says only `Call` without a clear prefix or selection, do not guess; first ask them to choose the quote using the visible quote prefix buttons. "
+        "On success in quote mode, return the dealer's phone and shop name to the mechanic in a short Hinglish message. "
+        "If the tool fails, reply briefly that contact details abhi nahi mil paayi and ask them to try again."
+    ),
+    "when_run": "When mechanic chooses Call for a selected quote and the system should resolve the dealer contact.",
 },
     {
     "name": "create_order",
@@ -1447,14 +1473,14 @@ Request Ref: {REQUEST_PREFIX}
 {List each part with Part Name, Company, Model, Year, Qty}
 
 
-Kya aapke paas hai?|Send Quote FD264944,Ignore,Chat FD264944
+Kya aapke paas hai?|Send Quote FD264944,Ignore,Call FD264944
 
-If dealer taps Chat FD264944 or says they want to chat for that request:
+If dealer taps Call FD264944 or says they want to call for that request:
 - Reverse-match the visible request prefix to the full request id
 - Ensure CURRENT AGENT VARIABLES.context.current_request_id points to that request
-- Call the chat_create_or_open tool
-- After success, send the dealer_link_url and tell the dealer in Hinglish to open that link to chat with the mechanic
-- If chat cannot be opened, say so briefly and ask them to try again
+- Call the resolve_chat_phone tool with that request_id
+- After success, return the mechanic's phone number and shop name to the dealer in a short Hinglish reply
+- If contact details cannot be resolved, say so briefly and ask them to try again
 
 ---
 
@@ -1674,17 +1700,17 @@ When dealer selects a request:
 - In the detailed view, list ALL parts of that request with Part Name, Company, Model, Year, Qty
 - Do not collapse the detailed view
 - After showing full request details, ask:
-  `Is request par kya karna hai?|Send Quote FD264944,View All Quotes FD264944,Chat FD264944,Main Menu`
+  `Is request par kya karna hai?|Send Quote FD264944,View All Quotes FD264944,Call FD264944,Main Menu`
 
 If dealer taps Send Quote:
 - Use the already selected request from CURRENT AGENT VARIABLES.context.current_request_id and current_items
 - Transition to quote_flow
 
-If dealer taps Chat FD264944:
+If dealer taps Call FD264944:
 - Use the already selected request from CURRENT AGENT VARIABLES.context.current_request_id
-- Call the chat_create_or_open tool
-- After success, send the dealer_link_url and tell the dealer in Hinglish to open that link to chat with the mechanic
-- If chat cannot be opened, say so briefly and keep the selected request active
+- Call the resolve_chat_phone tool with that request_id
+- After success, return the mechanic's phone number and shop name in a short Hinglish reply
+- If contact details cannot be resolved, say so briefly and keep the selected request active
 
 If dealer taps View All Quotes:
 - Stay in active_requests state
@@ -2175,10 +2201,10 @@ No explanation. No punctuation. Just the state name."""
 
 DEALER_STATE_TOOLS: Dict[str, List[str]] = {
     "menu": [],
-    "incoming_request": ["chat_create_or_open"],
+    "incoming_request": ["resolve_chat_phone"],
     "quote_flow": [],
     "quote_confirmation": ["submit_quote"],
-    "active_requests": ["chat_create_or_open"],
+    "active_requests": ["resolve_chat_phone"],
     "order_received": [],
     "pickup_notification": [],
     "pickup_confirmation": ["dealer_pickup_confirm"],
@@ -2199,28 +2225,22 @@ DEALER_STATE_TOOLS: Dict[str, List[str]] = {
 
 SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
     {
-    "name": "chat_create_or_open",
-    "api_url": "https://dnskvumoyqalsrbcyyjy.supabase.co/functions/v1/chat-create-or-open",
+    "name": "resolve_chat_phone",
+    "api_url": "https://dnskvumoyqalsrbcyyjy.supabase.co/functions/v1/resolve-chat-phone",
     "payload_template": {
         "request_id": "",
-        "dealer_id": "",
-        "base_url": "",
-        "created_by_role": "dealer",
+        "quote_id": "",
     },
     "instructions": (
-        "Use this tool when the dealer chooses Chat for a selected request, for example `Chat FD264944`. "
-        "This tool creates or reuses one internal request-linked chat between the selected dealer, the request's mechanic, and that request. "
-        "Get request_id from CURRENT AGENT VARIABLES.context.current_request_id. "
-        "Get dealer_id from CURRENT AGENT VARIABLES dealer_id. "
-        "Get base_url from system configuration. "
-        "Set created_by_role to `dealer` unless another role is explicitly required. "
+        "Use this tool only to resolve the contact phone number and shop name tied to a request or quote. "
+        "Pass exactly one of request_id or quote_id, never both. "
+        "For the dealer agent, when the dealer chooses Call for a selected request, pass only request_id from CURRENT AGENT VARIABLES.context.current_request_id. "
         "Do not ask the dealer for raw ids if the request has already been selected by prefix or button. "
-        "If multiple requests are visible and the dealer says only `Chat` without a clear prefix or selection, do not guess; first ask them to choose the request using the visible request prefix buttons. "
-        "On success, parse and store chat_id, dealer_link_url, mechanic_link_url, and expiry timestamps if available. "
-        "After success, reply with the dealer_link_url in a short Hinglish message telling the dealer to open that link to chat with the mechanic. "
-        "If the tool fails, reply briefly that chat open nahi ho paaya and ask them to try again."
+        "If multiple requests are visible and the dealer says only `Call` without a clear prefix or selection, do not guess; first ask them to choose the request using the visible request prefix buttons. "
+        "On success in request mode, return the mechanic's phone and shop name to the dealer in a short Hinglish message. "
+        "If the tool fails, reply briefly that contact details abhi nahi mil paayi and ask them to try again."
     ),
-    "when_run": "When dealer chooses Chat for a selected request and the system should create or open the internal request chat.",
+    "when_run": "When dealer chooses Call for a selected request and the system should resolve the mechanic contact.",
 },
     {
     "name": "submit_quote",
@@ -3055,11 +3075,11 @@ def _fill_payload_from_context(
         fill("dealer_id", current_variables.get("dealer_id"))
         fill("dealer_rating", current_variables.get("dealer_rating") or current_variables.get("rating"))
         fill("district", current_variables.get("district"))
-    elif tool_name == "chat_create_or_open":
-        fill("request_id", context.get("current_request_id"))
-        fill("dealer_id", current_variables.get("dealer_id"))
-        fill("base_url", CHAT_FRONTEND_BASE_URL)
-        fill("created_by_role", "dealer")
+    elif tool_name == "resolve_chat_phone":
+        if current_variables.get("dealer_id") not in (None, ""):
+            fill("request_id", context.get("current_request_id"))
+        elif current_variables.get("mechanic_id") not in (None, ""):
+            fill("quote_id", context.get("current_quote_id"))
     elif tool_name == "create_order":
         fill("quote_id", context.get("current_quote_id"))
         fill("dealer_id", context.get("current_dealer_id"))
