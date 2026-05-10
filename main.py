@@ -1525,6 +1525,7 @@ As soon as the dealer gives price, part type, stock status, or Other Brand detai
 As soon as the dealer gives a whole-order discount, save it in current_items.discount and keep current_totals in sync.
 As soon as the dealer gives shared order notes, save them in current_items.notes.
 As soon as final order total is known, save it in current_items.total_amount.
+When submit_quote is called, quote_details must be built as an object with order-level fields outside the items array: { discount_input, discount_amount, gross_total, final_total, items }.
 
 Collect quote details part-by-part.
 Do not confirm early.
@@ -2274,14 +2275,22 @@ SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
         "dealer_rating": "",
         "district": "",
         "notes": "",
-        "quote_details": [],
+        "quote_details": {
+            "discount_input": "",
+            "discount_amount": "",
+            "gross_total": "",
+            "final_total": "",
+            "items": [],
+        },
     },
     "instructions": (
         "Use this tool to submit a dealer's quote for a part request. "
         "Only call this AFTER the dealer has confirmed their quote with all required fields. "
-        "The 'quote_details' field should be a JSON array of objects, each with: "
+        "The 'quote_details' field should be a JSON object with this shape: "
+        "{ discount_input, discount_amount, gross_total, final_total, items }. "
+        "Inside quote_details.items, each item object should contain: "
         "part_name, company, model, year, quantity, price, part_type (Genuine/Other Brand), "
-        "stock_status (Available/Arrange Karna Padega), discount, total_amount, notes, and other_brand_details when applicable. "
+        "stock_status (Available/Arrange Karna Padega), other_brand_details when applicable, and line_total. "
         "Collect price, part_type, and stock_status separately for each unique requested part. "
         "Collect discount decision only once for the whole order after all requested parts have required quote fields. "
         "Only use part_type values Genuine or Other Brand. "
@@ -2297,6 +2306,12 @@ SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
         "As soon as the dealer gives any new item-level detail, update that same object inside current_items.items immediately. "
         "As soon as the dealer gives a whole-order discount, save it in current_items.discount and keep CURRENT AGENT VARIABLES.context.current_totals in sync. "
         "As soon as the final order total is known, save it in current_items.total_amount. "
+        "When building quote_details, keep order-level values outside the items array: "
+        "quote_details.discount_input should preserve the original dealer-entered format such as 10% or ₹50; "
+        "quote_details.discount_amount should be the rupee discount amount; "
+        "quote_details.gross_total should be the MRP total before discount; "
+        "quote_details.final_total should be the payable total after discount; "
+        "quote_details.items should contain only item-specific rows. "
         "As soon as there are Other Brand details, keep them inside the matching item's other_brand_details field. "
         "As soon as there are shared extra notes for the full quote, keep them in current_items.notes instead of item rows or loose free text. "
         "Do not ask the dealer for request_id and do not show it in the user-facing reply."
@@ -2656,17 +2671,48 @@ def _stringify_amount(value: float) -> str:
     return f"{rounded:.2f}".rstrip("0").rstrip(".")
 
 
-def _build_canonical_quote_details(current_items: Any, incoming_quote_details: Any, current_totals: Any) -> List[Dict[str, Any]]:
+def _extract_discount_amount(discount_input: Any, gross_total: float, final_total: float) -> float:
+    text = str(discount_input or "").strip()
+    if not text:
+        if gross_total > 0 and final_total > 0 and gross_total >= final_total:
+            return max(gross_total - final_total, 0.0)
+        return 0.0
+
+    if "%" in text:
+        pct = _parse_numeric_amount(text)
+        if pct > 0 and gross_total > 0:
+            return max(gross_total * pct / 100.0, 0.0)
+
+    amount = _parse_numeric_amount(text)
+    if amount > 0:
+        return amount
+
+    if gross_total > 0 and final_total > 0 and gross_total >= final_total:
+        return max(gross_total - final_total, 0.0)
+    return 0.0
+
+
+def _build_canonical_quote_details(current_items: Any, incoming_quote_details: Any, current_totals: Any) -> Dict[str, Any]:
     current_norm = _get_current_items_list(current_items)
-    incoming_norm = [_normalize_item(item) for item in (incoming_quote_details or []) if isinstance(item, dict)]
+    incoming_items: List[Dict[str, Any]] = []
+    incoming_summary: Dict[str, Any] = {}
+    if isinstance(incoming_quote_details, dict):
+        incoming_items = [_normalize_item(item) for item in (incoming_quote_details.get("items") or []) if isinstance(item, dict)]
+        incoming_summary = dict(incoming_quote_details)
+    else:
+        incoming_items = [_normalize_item(item) for item in (incoming_quote_details or []) if isinstance(item, dict)]
+
+    incoming_norm = incoming_items
     merged = _merge_context_items(current_norm, incoming_norm) if incoming_norm else current_norm
 
-    canonical: List[Dict[str, Any]] = []
+    canonical_items: List[Dict[str, Any]] = []
+    gross_total = 0.0
     for item in merged:
         normalized = _normalize_item(item)
         quantity = _parse_numeric_amount(normalized.get("quantity")) or 1.0
         price = _parse_numeric_amount(normalized.get("price"))
         line_total = price * quantity
+        gross_total += line_total
 
         normalized["quantity"] = int(quantity) if abs(quantity - int(quantity)) < 1e-9 else quantity
         normalized["price"] = str(normalized.get("price") or "")
@@ -2674,9 +2720,39 @@ def _build_canonical_quote_details(current_items: Any, incoming_quote_details: A
         normalized["stock_status"] = str(normalized.get("stock_status") or "")
         normalized["line_total"] = _stringify_amount(line_total)
         normalized["other_brand_details"] = _normalize_item(normalized).get("other_brand_details", _safe_deepcopy(ITEM_SCHEMA["other_brand_details"]))
-        canonical.append(normalized)
+        canonical_items.append(normalized)
 
-    return canonical
+    totals = dict(current_totals) if isinstance(current_totals, dict) else {}
+    shared = _get_current_items_shared(current_items)
+    discount_input = str(
+        shared.get("discount")
+        or totals.get("order_discount")
+        or incoming_summary.get("discount_input")
+        or incoming_summary.get("discount")
+        or ""
+    ).strip()
+    final_total = _parse_numeric_amount(
+        shared.get("total_amount")
+        or totals.get("final_total")
+        or totals.get("final_total_amount")
+        or incoming_summary.get("final_total")
+        or ""
+    )
+    if final_total <= 0 and gross_total > 0:
+        discount_amount_fallback = _extract_discount_amount(discount_input, gross_total, 0.0)
+        final_total = max(gross_total - discount_amount_fallback, 0.0)
+
+    discount_amount = _extract_discount_amount(discount_input, gross_total, final_total)
+    if final_total <= 0 and gross_total > 0:
+        final_total = max(gross_total - discount_amount, 0.0)
+
+    return {
+        "discount_input": discount_input,
+        "discount_amount": _stringify_amount(discount_amount) if discount_amount > 0 else "",
+        "gross_total": _stringify_amount(gross_total) if gross_total > 0 else "",
+        "final_total": _stringify_amount(final_total) if final_total > 0 else "",
+        "items": canonical_items,
+    }
 
 
 def _sync_context_items_with_totals(context: Dict[str, Any]) -> Dict[str, Any]:
@@ -3487,7 +3563,12 @@ def _fill_payload_from_context(
 
 
 def _find_incomplete_quote_item(items: Any) -> Optional[Dict[str, Any]]:
-    normalized_items = _get_current_items_list(items) if isinstance(items, dict) else [_normalize_item(item) for item in (items or []) if isinstance(item, dict)]
+    if isinstance(items, dict) and isinstance(items.get("items"), list):
+        normalized_items = [_normalize_item(item) for item in items.get("items", []) if isinstance(item, dict)]
+    elif isinstance(items, dict):
+        normalized_items = _get_current_items_list(items)
+    else:
+        normalized_items = [_normalize_item(item) for item in (items or []) if isinstance(item, dict)]
     for item in normalized_items:
         if item.get("price") in (None, ""):
             return {"item": item, "field": "price"}
