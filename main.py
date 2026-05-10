@@ -977,7 +977,7 @@ If dealer gives a discount for the order:
 - Calculate the discount from the whole order gross total only
 - If the discount format is unclear, ask one short clarification question for the whole order
 - Do not ask discount separately for each part
-- Immediately store that same whole-order discount value into each current_items item's discount field
+- Immediately store that same whole-order discount value into current_items.discount
 - Keep CURRENT AGENT VARIABLES.context.current_totals updated with gross_total, order_discount, and final_total
 
 Step 7 - After all unique parts have price, part type, Other Brand details if needed, stock status, and whole-order discount decision:
@@ -999,8 +999,8 @@ Koi extra notes hain?|Haan,Skip
 If dealer adds notes:
 - Store the notes exactly as given
 - Do not rewrite or expand them
-- If Other Brand details exist, preserve them in notes and append any extra notes after them
-- Also keep the matching current_items.notes fields updated immediately
+- If Other Brand details exist, keep them in the matching item's other_brand_details field
+- Also keep shared order notes updated in current_items.notes immediately
 
 Step 9 - After notes are skipped or collected, show final confirmation:
 
@@ -1415,10 +1415,11 @@ You are a TASK EXECUTION SYSTEM. Not conversational. Not explanatory.
 - These keys always exist. Fill them when relevant; leave them empty when unknown.
 - When you spot a typed ID in chat or tool output, write it only to its matching schema field:
   Request ID → current_request_id; Quote ID → current_quote_id; Order ID → current_order_id; Dealer ID → current_dealer_id; Mechanic ID → current_mechanic_id.
-- For dealer quote creation, build current_items progressively. Each item should hold part_name, company, model, year, quantity, price, part_type, stock_status, discount, notes, total_amount, and other_brand_details when applicable.
-- For dealer quote creation, these item fields must always stay present by schema in current_items even if some are empty: part_name, company, model, year, quantity, price, part_type, stock_status, discount, total_amount, notes, other_brand_details.
-- As soon as the dealer gives a new value for price, part type, stock status, discount, total amount, notes, or Other Brand details, update that same field inside the matching current_items object immediately.
-- When the dealer gives a whole-order discount, copy that discount value into each current_items item's discount field and keep current_totals in sync.
+- For dealer quote creation, CURRENT AGENT VARIABLES.context.current_items is a structured quote-draft object with this shape: { items: [...], discount: "", total_amount: "", notes: "" }.
+- Each object inside current_items.items must always keep these item-only schema fields present even if empty: part_name, company, model, year, quantity, price, part_type, stock_status, other_brand_details.
+- As soon as the dealer gives a new item-level value for price, part type, stock status, or Other Brand details, update that same field inside the matching object in current_items.items immediately.
+- When the dealer gives a whole-order discount, save it in current_items.discount and keep current_totals in sync.
+- When the dealer gives shared order notes, save them in current_items.notes.
 - Do not create loose ID keys like request_id, quote_id, order_id, dealer_id, last_seen_ids, quote_draft, data, or all_requests inside context.
 - CURRENT AGENT VARIABLES.current_state holds the persisted dealer state for this conversation.
 - Call manage_variables immediately when any future-use ID, selection data, or quote item data appears.
@@ -1518,11 +1519,12 @@ If the dealer clicked or typed a request-prefixed selector like `Send Quote FD26
 After that full clear, refill only the newly selected request's current_request_id, current_items, and selected-request details from that same request message or matched request record.
 Do not keep price, part type, stock status, discount, totals, dealer id, mechanic id, quote id, or any other current_* values from an older request.
 Do not ask the first price question until that full clear-and-refill step is complete.
-Keep CURRENT AGENT VARIABLES.context.current_items as the live canonical quote draft for this request.
-Each current_items object must always keep these schema fields present even if empty: part_name, company, model, year, quantity, price, part_type, stock_status, discount, total_amount, notes, other_brand_details.
-As soon as the dealer gives price, part type, stock status, discount, notes, or Other Brand details, update the matching current_items object immediately.
-As soon as price and quantity are known for a part, keep that item's total_amount updated.
-As soon as the dealer gives a whole-order discount, copy that same discount value into each current_items item's discount field and keep current_totals in sync.
+Keep CURRENT AGENT VARIABLES.context.current_items as the live canonical quote draft for this request, with the shape: { items: [...], discount: "", total_amount: "", notes: "" }.
+Each object inside current_items.items must always keep these item-only schema fields present even if empty: part_name, company, model, year, quantity, price, part_type, stock_status, other_brand_details.
+As soon as the dealer gives price, part type, stock status, or Other Brand details, update the matching object inside current_items.items immediately.
+As soon as the dealer gives a whole-order discount, save it in current_items.discount and keep current_totals in sync.
+As soon as the dealer gives shared order notes, save them in current_items.notes.
+As soon as final order total is known, save it in current_items.total_amount.
 
 Collect quote details part-by-part.
 Do not confirm early.
@@ -2285,16 +2287,18 @@ SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Only use part_type values Genuine or Other Brand. "
         "Treat Other, Other brand, other part, local, aftermarket, and non-genuine as Other Brand. "
         "If part_type is Other Brand, first list all required Other Brand fields for that part in one prompt, then collect Brand name, Bike Model name, Bike Model year, and Bike model variant before submit. "
-        "Add Other Brand details and whole-order discount details to the notes field in a readable format, along with any extra notes the dealer gave. "
+        "Keep Other Brand details inside the matching item's other_brand_details field. Keep whole-order discount in current_items.discount/current_totals and keep shared extra notes in current_items.notes or the top-level notes field. "
         "Get dealer_id, dealer_rating, and district from CURRENT AGENT VARIABLES. "
         "Get request_id from CURRENT AGENT VARIABLES.context.current_request_id. "
-        "Use CURRENT AGENT VARIABLES.context.current_items as the canonical source for quote_details before submit. "
+        "Use CURRENT AGENT VARIABLES.context.current_items as the canonical quote-draft source before submit. "
         "The agent should use manage_variables to fill current_request_id and current_items as soon as the dealer selects or sees the request they want to quote on. "
-        "Before quote submission, the latest visible request's id must already be saved in current_request_id and all quote item details must be saved in current_items. "
-        "As soon as the dealer gives any new item-level detail, update that same item's object inside current_items immediately. "
-        "As soon as the dealer gives a whole-order discount, write that discount value into each current_items item's discount field and keep CURRENT AGENT VARIABLES.context.current_totals in sync. "
-        "As soon as a line item's price and quantity are known, keep that item's total_amount updated. "
-        "As soon as there are Other Brand details or extra notes, keep them inside that item's other_brand_details and notes fields instead of leaving them only in free text. "
+        "Before quote submission, the latest visible request's id must already be saved in current_request_id and the full quote draft must already be saved in current_items. "
+        "current_items must use this structure: { items: [...], discount: '', total_amount: '', notes: '' }. "
+        "As soon as the dealer gives any new item-level detail, update that same object inside current_items.items immediately. "
+        "As soon as the dealer gives a whole-order discount, save it in current_items.discount and keep CURRENT AGENT VARIABLES.context.current_totals in sync. "
+        "As soon as the final order total is known, save it in current_items.total_amount. "
+        "As soon as there are Other Brand details, keep them inside the matching item's other_brand_details field. "
+        "As soon as there are shared extra notes for the full quote, keep them in current_items.notes instead of item rows or loose free text. "
         "Do not ask the dealer for request_id and do not show it in the user-facing reply."
     ),
     "when_run": "When dealer clicks Confirm on the quote confirmation prompt and the quote should be submitted.",
@@ -2358,7 +2362,12 @@ CONTEXT_SCHEMA: Dict[str, Any] = {
     "current_order_id": "",
     "current_dealer_id": "",
     "current_mechanic_id": "",
-    "current_items": [],
+    "current_items": {
+        "items": [],
+        "discount": "",
+        "total_amount": "",
+        "notes": "",
+    },
     "current_selection_map": {},
     "current_flow": "",
     "current_notes": "",
@@ -2419,15 +2428,19 @@ ITEM_SCHEMA: Dict[str, Any] = {
     "price": "",
     "part_type": "",
     "stock_status": "",
-    "discount": "",
-    "total_amount": "",
-    "notes": "",
     "other_brand_details": {
         "brand_name": "",
         "bike_model_name": "",
         "bike_model_year": "",
         "bike_model_variant": "",
     },
+}
+
+CURRENT_ITEMS_SCHEMA: Dict[str, Any] = {
+    "items": [],
+    "discount": "",
+    "total_amount": "",
+    "notes": "",
 }
 
 
@@ -2455,6 +2468,10 @@ def _blank_context() -> Dict[str, Any]:
     return _safe_deepcopy(CONTEXT_SCHEMA)
 
 
+def _blank_current_items() -> Dict[str, Any]:
+    return _safe_deepcopy(CURRENT_ITEMS_SCHEMA)
+
+
 def _normalize_item(value: Any) -> Dict[str, Any]:
     normalized = _safe_deepcopy(ITEM_SCHEMA)
     if not isinstance(value, dict):
@@ -2462,7 +2479,7 @@ def _normalize_item(value: Any) -> Dict[str, Any]:
 
     direct_keys = {
         "part_name", "company", "model", "year", "quantity", "price",
-        "part_type", "stock_status", "discount", "total_amount", "notes",
+        "part_type", "stock_status",
     }
     aliases = {
         "partname": "part_name",
@@ -2473,8 +2490,6 @@ def _normalize_item(value: Any) -> Dict[str, Any]:
         "parttype": "part_type",
         "stock": "stock_status",
         "stockstatus": "stock_status",
-        "total": "total_amount",
-        "amount": "total_amount",
     }
 
     for raw_key, raw_value in value.items():
@@ -2506,6 +2521,71 @@ def _normalize_item(value: Any) -> Dict[str, Any]:
             if target and raw_value not in (None, ""):
                 normalized["other_brand_details"][target] = raw_value
     return normalized
+
+
+def _normalize_current_items(value: Any) -> Dict[str, Any]:
+    normalized = _blank_current_items()
+
+    if isinstance(value, list):
+        normalized["items"] = [_normalize_item(item) for item in value if isinstance(item, dict)]
+        return normalized
+
+    if not isinstance(value, dict):
+        return normalized
+
+    items = (
+        value.get("items")
+        or value.get("current_items")
+        or value.get("quote_details")
+        or value.get("quoteDetails")
+    )
+    if isinstance(items, list):
+        normalized["items"] = [_normalize_item(item) for item in items if isinstance(item, dict)]
+
+    discount = value.get("discount")
+    if discount in (None, ""):
+        discount = value.get("order_discount")
+    if discount not in (None, ""):
+        normalized["discount"] = str(discount)
+
+    total_amount = value.get("total_amount")
+    if total_amount in (None, ""):
+        total_amount = value.get("final_total")
+    if total_amount in (None, ""):
+        total_amount = value.get("gross_total")
+    if total_amount not in (None, ""):
+        normalized["total_amount"] = str(total_amount)
+
+    notes = value.get("notes")
+    if notes not in (None, ""):
+        normalized["notes"] = str(notes)
+
+    return normalized
+
+
+def _get_current_items_list(value: Any) -> List[Dict[str, Any]]:
+    return list(_normalize_current_items(value).get("items", []))
+
+
+def _get_current_items_shared(value: Any) -> Dict[str, str]:
+    normalized = _normalize_current_items(value)
+    return {
+        "discount": str(normalized.get("discount") or ""),
+        "total_amount": str(normalized.get("total_amount") or ""),
+        "notes": str(normalized.get("notes") or ""),
+    }
+
+
+def _merge_current_items(base_value: Any, incoming_value: Any) -> Dict[str, Any]:
+    base = _normalize_current_items(base_value)
+    incoming = _normalize_current_items(incoming_value)
+
+    merged = _blank_current_items()
+    merged["items"] = _merge_context_items(base.get("items", []), incoming.get("items", []))
+    merged["discount"] = str(incoming.get("discount") or base.get("discount") or "")
+    merged["total_amount"] = str(incoming.get("total_amount") or base.get("total_amount") or "")
+    merged["notes"] = str(incoming.get("notes") or base.get("notes") or "")
+    return merged
 
 
 def _item_identity_key(value: Any, index: int = 0) -> str:
@@ -2577,12 +2657,9 @@ def _stringify_amount(value: float) -> str:
 
 
 def _build_canonical_quote_details(current_items: Any, incoming_quote_details: Any, current_totals: Any) -> List[Dict[str, Any]]:
-    current_norm = [_normalize_item(item) for item in (current_items or []) if isinstance(item, dict)]
+    current_norm = _get_current_items_list(current_items)
     incoming_norm = [_normalize_item(item) for item in (incoming_quote_details or []) if isinstance(item, dict)]
     merged = _merge_context_items(current_norm, incoming_norm) if incoming_norm else current_norm
-
-    totals = dict(current_totals) if isinstance(current_totals, dict) else {}
-    order_discount_value = str(totals.get("order_discount") or totals.get("discount_amount") or "").strip()
 
     canonical: List[Dict[str, Any]] = []
     for item in merged:
@@ -2595,13 +2672,11 @@ def _build_canonical_quote_details(current_items: Any, incoming_quote_details: A
         normalized["price"] = str(normalized.get("price") or "")
         normalized["part_type"] = str(normalized.get("part_type") or "")
         normalized["stock_status"] = str(normalized.get("stock_status") or "")
-        normalized["discount"] = order_discount_value
-        normalized["total_amount"] = _stringify_amount(line_total)
-        normalized["notes"] = str(normalized.get("notes") or "")
+        normalized["line_total"] = _stringify_amount(line_total)
         normalized["other_brand_details"] = _normalize_item(normalized).get("other_brand_details", _safe_deepcopy(ITEM_SCHEMA["other_brand_details"]))
         canonical.append(normalized)
 
-    return [_normalize_item(item) for item in canonical]
+    return canonical
 
 
 def _sync_context_items_with_totals(context: Dict[str, Any]) -> Dict[str, Any]:
@@ -2609,26 +2684,37 @@ def _sync_context_items_with_totals(context: Dict[str, Any]) -> Dict[str, Any]:
         return _blank_context()
 
     working = _safe_deepcopy(context)
-    items = [_normalize_item(item) for item in working.get("current_items", []) if isinstance(item, dict)]
+    current_items = _normalize_current_items(working.get("current_items"))
+    items = list(current_items.get("items", []))
     totals = dict(working.get("current_totals") or {}) if isinstance(working.get("current_totals"), dict) else {}
     if not items:
-        working["current_items"] = []
+        working["current_items"] = current_items
         return working
 
     order_discount_value = str(totals.get("order_discount") or totals.get("discount_amount") or "").strip()
+    final_total_value = str(totals.get("final_total") or totals.get("final_total_amount") or totals.get("gross_total") or current_items.get("total_amount") or "").strip()
     synced: List[Dict[str, Any]] = []
+    aggregate_total = 0.0
     for item in items:
         normalized = _normalize_item(item)
         qty = _parse_numeric_amount(normalized.get("quantity")) or 1.0
         price = _parse_numeric_amount(normalized.get("price"))
         line_total = price * qty
-        if price > 0:
-            normalized["total_amount"] = _stringify_amount(line_total)
-        if order_discount_value:
-            normalized["discount"] = order_discount_value
+        aggregate_total += line_total
         synced.append(normalized)
 
-    working["current_items"] = synced
+    current_items["items"] = synced
+    if order_discount_value:
+        current_items["discount"] = order_discount_value
+    elif current_items.get("discount") in (None, ""):
+        current_items["discount"] = ""
+    if final_total_value:
+        current_items["total_amount"] = final_total_value
+    elif aggregate_total > 0:
+        current_items["total_amount"] = _stringify_amount(aggregate_total)
+    if current_items.get("notes") in (None, ""):
+        current_items["notes"] = ""
+    working["current_items"] = current_items
     return working
 
 
@@ -2684,14 +2770,15 @@ def _normalize_context(value: Any) -> Dict[str, Any]:
         if key in normalized and key not in ("current_items", "current_selection_map", "current_totals"):
             normalized[key] = "" if raw_value is None else raw_value
 
-    items = (
-        value.get("current_items")
-        or value.get("items")
-        or value.get("quote_details")
-        or value.get("quoteDetails")
-    )
-    if isinstance(items, list):
-        normalized["current_items"] = [_normalize_item(item) for item in items if isinstance(item, dict)]
+    items = value.get("current_items")
+    if isinstance(items, (list, dict)):
+        normalized["current_items"] = _normalize_current_items(items)
+    elif isinstance(value.get("items"), list):
+        normalized["current_items"] = _normalize_current_items({"items": value.get("items")})
+    elif isinstance(value.get("quote_details"), list):
+        normalized["current_items"] = _normalize_current_items({"items": value.get("quote_details")})
+    elif isinstance(value.get("quoteDetails"), list):
+        normalized["current_items"] = _normalize_current_items({"items": value.get("quoteDetails")})
 
     selection_map = (
         value.get("current_selection_map")
@@ -2771,9 +2858,9 @@ def _apply_variables_patch(current_variables: Dict[str, Any], patch: Dict[str, A
         incoming_context_copy = _safe_deepcopy(incoming_context)
 
         if "current_items" in incoming_context_copy:
-            working_context["current_items"] = _merge_context_items(
-                working_context.get("current_items", []),
-                incoming_context_copy.get("current_items", []),
+            working_context["current_items"] = _merge_current_items(
+                working_context.get("current_items", _blank_current_items()),
+                incoming_context_copy.get("current_items", _blank_current_items()),
             )
             incoming_context_copy.pop("current_items", None)
 
@@ -3071,7 +3158,9 @@ def _extract_context_patch_from_text(text: str) -> Dict[str, Any]:
             context_patch["current_request_id"] = str(request_candidate["request_id"])
             found = True
         if isinstance(request_candidate.get("items"), list) and request_candidate["items"]:
-            context_patch["current_items"] = [_normalize_item(item) for item in request_candidate["items"] if isinstance(item, dict)]
+            context_patch["current_items"] = _normalize_current_items({
+                "items": [_normalize_item(item) for item in request_candidate["items"] if isinstance(item, dict)]
+            })
             found = True
 
     quote_candidates = [candidate for candidate in extracted_candidates if candidate.get("type") == "quote"]
@@ -3087,15 +3176,23 @@ def _extract_context_patch_from_text(text: str) -> Dict[str, Any]:
             context_patch["current_dealer_id"] = str(quote_candidate["dealer_id"])
             found = True
         if isinstance(quote_candidate.get("items"), list) and quote_candidate["items"]:
-            context_patch["current_items"] = [_normalize_item(item) for item in quote_candidate["items"] if isinstance(item, dict)]
+            context_patch["current_items"] = _normalize_current_items({
+                "items": [_normalize_item(item) for item in quote_candidate["items"] if isinstance(item, dict)]
+            })
             found = True
 
     quote_details = _extract_quote_details_from_preview(text)
     if quote_details:
-        context_patch["current_items"] = [_normalize_item(item) for item in quote_details]
+        context_patch["current_items"] = _normalize_current_items({
+            "items": [_normalize_item(item) for item in quote_details]
+        })
         summary = _extract_financial_summary_from_preview(text)
         if summary:
             context_patch["current_totals"] = summary
+            if summary.get("order_discount"):
+                context_patch["current_items"]["discount"] = str(summary.get("order_discount") or "")
+            if summary.get("final_total"):
+                context_patch["current_items"]["total_amount"] = str(summary.get("final_total") or "")
         found = True
 
     return {"context": context_patch} if found else {}
@@ -3258,7 +3355,9 @@ def _reset_context_for_selected_candidate(candidate: Dict[str, Any]) -> Dict[str
                 }
             }
         if isinstance(candidate.get("items"), list) and candidate["items"]:
-            fresh["current_items"] = [_normalize_item(item) for item in candidate["items"] if isinstance(item, dict)]
+            fresh["current_items"] = _normalize_current_items({
+                "items": [_normalize_item(item) for item in candidate["items"] if isinstance(item, dict)]
+            })
         return _normalize_context(fresh)
 
     if candidate_type == "quote":
@@ -3290,10 +3389,19 @@ def _reset_context_for_selected_candidate(candidate: Dict[str, Any]) -> Dict[str
         if mechanic_id:
             fresh["current_mechanic_id"] = mechanic_id
         if isinstance(candidate.get("items"), list) and candidate["items"]:
-            fresh["current_items"] = [_normalize_item(item) for item in candidate["items"] if isinstance(item, dict)]
+            fresh["current_items"] = _normalize_current_items({
+                "items": [_normalize_item(item) for item in candidate["items"] if isinstance(item, dict)]
+            })
         summary = _extract_financial_summary_from_preview(str(candidate.get("raw_text") or ""))
         if summary:
             fresh["current_totals"] = summary
+            fresh["current_items"] = _merge_current_items(
+                fresh.get("current_items", _blank_current_items()),
+                {
+                    "discount": str(summary.get("order_discount") or ""),
+                    "total_amount": str(summary.get("final_total") or ""),
+                },
+            )
         return _normalize_context(fresh)
 
     return _normalize_context(fresh)
@@ -3343,6 +3451,8 @@ def _fill_payload_from_context(
         fill("dealer_id", current_variables.get("dealer_id"))
         fill("dealer_rating", current_variables.get("dealer_rating") or current_variables.get("rating"))
         fill("district", current_variables.get("district"))
+        shared_current_items = _get_current_items_shared(context.get("current_items"))
+        fill("notes", shared_current_items.get("notes"))
     elif tool_name == "resolve_chat_phone":
         if current_variables.get("dealer_id") not in (None, ""):
             fill("request_id", context.get("current_request_id"))
@@ -3369,7 +3479,7 @@ def _fill_payload_from_context(
 
     if tool_name == "submit_quote":
         payload["quote_details"] = _build_canonical_quote_details(
-            context.get("current_items", []),
+            context.get("current_items", _blank_current_items()),
             payload.get("quote_details", []),
             context.get("current_totals", {}),
         )
@@ -3377,7 +3487,7 @@ def _fill_payload_from_context(
 
 
 def _find_incomplete_quote_item(items: Any) -> Optional[Dict[str, Any]]:
-    normalized_items = [_normalize_item(item) for item in (items or []) if isinstance(item, dict)]
+    normalized_items = _get_current_items_list(items) if isinstance(items, dict) else [_normalize_item(item) for item in (items or []) if isinstance(item, dict)]
     for item in normalized_items:
         if item.get("price") in (None, ""):
             return {"item": item, "field": "price"}
@@ -3412,6 +3522,7 @@ def build_manage_variables_tool(request_state: Dict[str, Any]) -> StructuredTool
             "CURRENT AGENT VARIABLES.context is a strict schema with only these short-term fields: "
             "current_request_id, current_quote_id, current_order_id, current_dealer_id, current_mechanic_id, "
             "current_items, current_selection_map, current_flow, current_notes, current_totals. "
+            "current_items is a structured quote-draft object with the shape { items: [...], discount: '', total_amount: '', notes: '' }. "
             "Save typed IDs only into their matching current_* fields. "
             "Save fetched DB/request/quote/order item details only into current_items or current_selection_map. "
             "Do not create loose keys such as request_id, quote_id, order_id, dealer_id, last_seen_ids, quote_draft, data, or all_requests inside context. "
@@ -3501,9 +3612,9 @@ def build_static_tools(
                         if active_request and active_request.get("request_id"):
                             context["current_request_id"] = str(active_request["request_id"])
                             if isinstance(active_request.get("items"), list) and active_request["items"]:
-                                context["current_items"] = [
-                                    _normalize_item(item) for item in active_request["items"] if isinstance(item, dict)
-                                ]
+                                context["current_items"] = _normalize_current_items({
+                                    "items": [_normalize_item(item) for item in active_request["items"] if isinstance(item, dict)]
+                                })
                             current_vars["context"] = _normalize_context(context)
                             request_state["variables"] = _apply_variables_patch(
                                 request_state.get("variables", {}),
