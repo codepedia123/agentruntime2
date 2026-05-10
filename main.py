@@ -14,7 +14,7 @@ import urllib.parse
 import re
 import copy
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Annotated
+from typing import Any, Dict, List, Optional, Annotated, Tuple
 from operator import ior
 
 import requests
