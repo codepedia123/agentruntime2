@@ -977,6 +977,8 @@ If dealer gives a discount for the order:
 - Calculate the discount from the whole order gross total only
 - If the discount format is unclear, ask one short clarification question for the whole order
 - Do not ask discount separately for each part
+- Immediately store that same whole-order discount value into each current_items item's discount field
+- Keep CURRENT AGENT VARIABLES.context.current_totals updated with gross_total, order_discount, and final_total
 
 Step 7 - After all unique parts have price, part type, Other Brand details if needed, stock status, and whole-order discount decision:
 
@@ -998,6 +1000,7 @@ If dealer adds notes:
 - Store the notes exactly as given
 - Do not rewrite or expand them
 - If Other Brand details exist, preserve them in notes and append any extra notes after them
+- Also keep the matching current_items.notes fields updated immediately
 
 Step 9 - After notes are skipped or collected, show final confirmation:
 
@@ -1413,6 +1416,9 @@ You are a TASK EXECUTION SYSTEM. Not conversational. Not explanatory.
 - When you spot a typed ID in chat or tool output, write it only to its matching schema field:
   Request ID → current_request_id; Quote ID → current_quote_id; Order ID → current_order_id; Dealer ID → current_dealer_id; Mechanic ID → current_mechanic_id.
 - For dealer quote creation, build current_items progressively. Each item should hold part_name, company, model, year, quantity, price, part_type, stock_status, discount, notes, total_amount, and other_brand_details when applicable.
+- For dealer quote creation, these item fields must always stay present by schema in current_items even if some are empty: part_name, company, model, year, quantity, price, part_type, stock_status, discount, total_amount, notes, other_brand_details.
+- As soon as the dealer gives a new value for price, part type, stock status, discount, total amount, notes, or Other Brand details, update that same field inside the matching current_items object immediately.
+- When the dealer gives a whole-order discount, copy that discount value into each current_items item's discount field and keep current_totals in sync.
 - Do not create loose ID keys like request_id, quote_id, order_id, dealer_id, last_seen_ids, quote_draft, data, or all_requests inside context.
 - CURRENT AGENT VARIABLES.current_state holds the persisted dealer state for this conversation.
 - Call manage_variables immediately when any future-use ID, selection data, or quote item data appears.
@@ -1512,6 +1518,11 @@ If the dealer clicked or typed a request-prefixed selector like `Send Quote FD26
 After that full clear, refill only the newly selected request's current_request_id, current_items, and selected-request details from that same request message or matched request record.
 Do not keep price, part type, stock status, discount, totals, dealer id, mechanic id, quote id, or any other current_* values from an older request.
 Do not ask the first price question until that full clear-and-refill step is complete.
+Keep CURRENT AGENT VARIABLES.context.current_items as the live canonical quote draft for this request.
+Each current_items object must always keep these schema fields present even if empty: part_name, company, model, year, quantity, price, part_type, stock_status, discount, total_amount, notes, other_brand_details.
+As soon as the dealer gives price, part type, stock status, discount, notes, or Other Brand details, update the matching current_items object immediately.
+As soon as price and quantity are known for a part, keep that item's total_amount updated.
+As soon as the dealer gives a whole-order discount, copy that same discount value into each current_items item's discount field and keep current_totals in sync.
 
 Collect quote details part-by-part.
 Do not confirm early.
@@ -2268,7 +2279,7 @@ SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Only call this AFTER the dealer has confirmed their quote with all required fields. "
         "The 'quote_details' field should be a JSON array of objects, each with: "
         "part_name, company, model, year, quantity, price, part_type (Genuine/Other Brand), "
-        "and stock_status (Available/Arrange Karna Padega). "
+        "stock_status (Available/Arrange Karna Padega), discount, total_amount, notes, and other_brand_details when applicable. "
         "Collect price, part_type, and stock_status separately for each unique requested part. "
         "Collect discount decision only once for the whole order after all requested parts have required quote fields. "
         "Only use part_type values Genuine or Other Brand. "
@@ -2277,9 +2288,13 @@ SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Add Other Brand details and whole-order discount details to the notes field in a readable format, along with any extra notes the dealer gave. "
         "Get dealer_id, dealer_rating, and district from CURRENT AGENT VARIABLES. "
         "Get request_id from CURRENT AGENT VARIABLES.context.current_request_id. "
-        "Use CURRENT AGENT VARIABLES.context.current_items as the source for quote_details when recent quote item data is needed before submit. "
+        "Use CURRENT AGENT VARIABLES.context.current_items as the canonical source for quote_details before submit. "
         "The agent should use manage_variables to fill current_request_id and current_items as soon as the dealer selects or sees the request they want to quote on. "
         "Before quote submission, the latest visible request's id must already be saved in current_request_id and all quote item details must be saved in current_items. "
+        "As soon as the dealer gives any new item-level detail, update that same item's object inside current_items immediately. "
+        "As soon as the dealer gives a whole-order discount, write that discount value into each current_items item's discount field and keep CURRENT AGENT VARIABLES.context.current_totals in sync. "
+        "As soon as a line item's price and quantity are known, keep that item's total_amount updated. "
+        "As soon as there are Other Brand details or extra notes, keep them inside that item's other_brand_details and notes fields instead of leaving them only in free text. "
         "Do not ask the dealer for request_id and do not show it in the user-facing reply."
     ),
     "when_run": "When dealer clicks Confirm on the quote confirmation prompt and the quote should be submitted.",
@@ -2544,6 +2559,79 @@ def _merge_context_items(base_items: Any, incoming_items: Any) -> List[Dict[str,
     return [_normalize_item(item) for item in merged]
 
 
+def _parse_numeric_amount(value: Any) -> float:
+    if value in (None, ""):
+        return 0.0
+    cleaned = re.sub(r"[^\d.\-]", "", str(value))
+    try:
+        return float(cleaned) if cleaned else 0.0
+    except Exception:
+        return 0.0
+
+
+def _stringify_amount(value: float) -> str:
+    rounded = round(float(value or 0.0), 2)
+    if abs(rounded - int(rounded)) < 1e-9:
+        return str(int(rounded))
+    return f"{rounded:.2f}".rstrip("0").rstrip(".")
+
+
+def _build_canonical_quote_details(current_items: Any, incoming_quote_details: Any, current_totals: Any) -> List[Dict[str, Any]]:
+    current_norm = [_normalize_item(item) for item in (current_items or []) if isinstance(item, dict)]
+    incoming_norm = [_normalize_item(item) for item in (incoming_quote_details or []) if isinstance(item, dict)]
+    merged = _merge_context_items(current_norm, incoming_norm) if incoming_norm else current_norm
+
+    totals = dict(current_totals) if isinstance(current_totals, dict) else {}
+    order_discount_value = str(totals.get("order_discount") or totals.get("discount_amount") or "").strip()
+
+    canonical: List[Dict[str, Any]] = []
+    for item in merged:
+        normalized = _normalize_item(item)
+        quantity = _parse_numeric_amount(normalized.get("quantity")) or 1.0
+        price = _parse_numeric_amount(normalized.get("price"))
+        line_total = price * quantity
+
+        normalized["quantity"] = int(quantity) if abs(quantity - int(quantity)) < 1e-9 else quantity
+        normalized["price"] = str(normalized.get("price") or "")
+        normalized["part_type"] = str(normalized.get("part_type") or "")
+        normalized["stock_status"] = str(normalized.get("stock_status") or "")
+        normalized["discount"] = order_discount_value
+        normalized["total_amount"] = _stringify_amount(line_total)
+        normalized["notes"] = str(normalized.get("notes") or "")
+        normalized["other_brand_details"] = _normalize_item(normalized).get("other_brand_details", _safe_deepcopy(ITEM_SCHEMA["other_brand_details"]))
+        canonical.append(normalized)
+
+    return [_normalize_item(item) for item in canonical]
+
+
+def _sync_context_items_with_totals(context: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(context, dict):
+        return _blank_context()
+
+    working = _safe_deepcopy(context)
+    items = [_normalize_item(item) for item in working.get("current_items", []) if isinstance(item, dict)]
+    totals = dict(working.get("current_totals") or {}) if isinstance(working.get("current_totals"), dict) else {}
+    if not items:
+        working["current_items"] = []
+        return working
+
+    order_discount_value = str(totals.get("order_discount") or totals.get("discount_amount") or "").strip()
+    synced: List[Dict[str, Any]] = []
+    for item in items:
+        normalized = _normalize_item(item)
+        qty = _parse_numeric_amount(normalized.get("quantity")) or 1.0
+        price = _parse_numeric_amount(normalized.get("price"))
+        line_total = price * qty
+        if price > 0:
+            normalized["total_amount"] = _stringify_amount(line_total)
+        if order_discount_value:
+            normalized["discount"] = order_discount_value
+        synced.append(normalized)
+
+    working["current_items"] = synced
+    return working
+
+
 def _normalize_selection_map(value: Any) -> Dict[str, Any]:
     if isinstance(value, dict):
         normalized: Dict[str, Any] = {}
@@ -2624,7 +2712,7 @@ def _normalize_context(value: Any) -> Dict[str, Any]:
     if isinstance(totals, dict):
         normalized["current_totals"] = dict(totals)
 
-    return normalized
+    return _sync_context_items_with_totals(normalized)
 
 
 def _normalize_variables(value: Any) -> Dict[str, Any]:
@@ -2690,6 +2778,7 @@ def _apply_variables_patch(current_variables: Dict[str, Any], patch: Dict[str, A
             incoming_context_copy.pop("current_items", None)
 
         _deep_merge_values(working_context, incoming_context_copy)
+        working["context"] = _sync_context_items_with_totals(working_context)
         normalized_patch = dict(normalized_patch)
         normalized_patch.pop("context", None)
 
@@ -3279,9 +3368,11 @@ def _fill_payload_from_context(
                     payload[key] = value
 
     if tool_name == "submit_quote":
-        details = context.get("current_items")
-        if "quote_details" in payload and not payload.get("quote_details") and isinstance(details, list) and details:
-            payload["quote_details"] = details
+        payload["quote_details"] = _build_canonical_quote_details(
+            context.get("current_items", []),
+            payload.get("quote_details", []),
+            context.get("current_totals", {}),
+        )
     return payload
 
 
