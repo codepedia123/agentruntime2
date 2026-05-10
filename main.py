@@ -232,7 +232,7 @@ If requests are available:
 - Ask clearly which request they want to see all quotes for
 - Do not skip this selection step unless the user has already selected one specific request
 - Use CURRENT AGENT VARIABLES.context.current_selection_map plus the visible 8-character prefix to match which listed request the user is referring to
-- When the user selects one of the listed requests, save the matched id into CURRENT AGENT VARIABLES.context.current_request_id and refresh CURRENT AGENT VARIABLES.context.current_items from that same selected request message or matched request record
+- When the user selects one of the listed requests by its 8-character prefix, first clear every CURRENT AGENT VARIABLES.context key that starts with `current_`, then refill only the selected request's current_request_id, current_items, and any selected-request details from that same request message or matched request record
 - If the user's selection is ambiguous, reverse-search the visible prefix against previous request messages in chat and the saved selection map
 - If more than one request is still possible, ask one short clarification question using only the human-friendly request labels with prefixes, not raw request_id
 
@@ -251,6 +251,7 @@ After the user selects a request:
 - If the user chooses `Call FD264944`, reverse-match that visible prefix to the real quote_id, save it into current_quote_id, call the resolve_chat_phone tool with quote_id, and return the dealer's phone number and shop name
 - Exception: if the latest previous assistant message is a new quote received message and already shows or contains one specific Quote ID plus Dealer ID and Request ID, and the user replies with accept quote / accept / order / book / confirm intent, do not ask them to choose a quote; use that visible quote directly
 - Match that choice using CURRENT AGENT VARIABLES.context.current_selection_map and the visible 8-character prefix, not by asking for raw ids
+- Whenever the user selects a quote by its 8-character prefix, first clear every CURRENT AGENT VARIABLES.context key that starts with `current_`, then refill only the selected quote's current_quote_id, current_request_id, current_dealer_id, current_items, current_totals, and any selected-quote details from that same quote message or matched quote record
 - If the user says something vague like `accept quote` and more than one quote is available in recent chat or saved selection data, do not guess
 - In that case, list all available quotes again with a brief overview plus their visible prefixes and ask them to choose one specific quote button
 - After the user chooses a quote, confirm the selected quote clearly before moving ahead
@@ -275,14 +276,14 @@ If user wants to order a quote:
 
 If the latest previous assistant message is a new quote received message with a visible quote prefix and the user says `Call FD264944` or similar:
 - Reverse-match that visible prefix to the real quote_id
-- Save the matched full quote id into CURRENT AGENT VARIABLES.context.current_quote_id
+- First clear every CURRENT AGENT VARIABLES.context key that starts with `current_`, then refill only the selected quote's current_quote_id, current_request_id, current_dealer_id, current_items, and selected-quote details from that same quote message
 - Call the resolve_chat_phone tool with quote_id
 - After success, return the dealer's phone number and shop name in a short Hinglish reply
 - If contact details cannot be resolved, say so briefly and ask them to try again
 
 If the latest previous assistant message is a new quote received message with exactly one quote and it contains Quote ID plus Dealer ID and Request ID:
 - Treat user replies like `accept quote`, `accept`, `order`, `book`, `yes`, `haan`, or `confirm` as selecting that quote
-- Immediately call `manage_variables` to fill CURRENT AGENT VARIABLES.context.current_quote_id, current_dealer_id, current_request_id, current_mechanic_id if available, and current_items with the visible quote details needed for confirmation
+- Immediately clear every CURRENT AGENT VARIABLES.context key that starts with `current_`, then refill CURRENT AGENT VARIABLES.context.current_quote_id, current_dealer_id, current_request_id, current_mechanic_id if available, current_items, and current_totals with the visible quote details needed for confirmation
 - Do not ask the user to select Quote 1 / Quote 2 / Quote 3
 - Do not ask the user for raw Quote ID, Request ID, or Dealer ID
 - Continue directly to selected quote confirmation
@@ -296,6 +297,7 @@ Otherwise, if more than one quote is visible in recent chat or saved selection d
 - Show buttons like:
   Quote 1 FD264944, Quote 2 A91C220B, Cancel
 - Reverse-search the chosen prefix against previous quote messages and CURRENT AGENT VARIABLES.context.current_selection_map to find the real quote_id
+- When a quote prefix is selected, first clear every CURRENT AGENT VARIABLES.context key that starts with `current_`, then refill only the selected quote's current_quote_id, current_request_id, current_dealer_id, current_items, and current_totals from that same selected quote message or matched quote record before proceeding
 
 Otherwise, first confirm which quote they want to order using CURRENT AGENT VARIABLES.context.current_selection_map.
 Show only the real selected quote.|Confirm Order,Cancel
@@ -505,6 +507,8 @@ You are a TASK EXECUTION SYSTEM. Not conversational. Not explanatory.
   current_request_id, current_quote_id, current_order_id, current_dealer_id, current_mechanic_id,
   current_items, current_selection_map, current_flow, current_notes, current_totals.
 - These keys always exist. Fill them when relevant; leave them empty when unknown.
+- Whenever the user selects a request or quote by an 8-character visible prefix, first clear every `current_*` context key completely, then refill only the selected request/quote's current_* values from that matched message or matched record, and only after that continue the flow.
+- After a prefix-based selection, do not keep older current_request_id, current_quote_id, current_order_id, current_dealer_id, current_mechanic_id, current_items, current_notes, current_totals, or stale current_selection_map entries from the previous selection.
 - When you spot a typed ID in chat or tool output, write it only to its matching schema field:
   Request ID → current_request_id; Quote ID → current_quote_id; Order ID → current_order_id; Dealer ID → current_dealer_id; Mechanic ID → current_mechanic_id.
 - Save DB/request/quote/order item details only in current_items or current_selection_map.
@@ -1477,7 +1481,7 @@ Kya aapke paas hai?|Send Quote FD264944,Ignore,Call FD264944
 
 If dealer taps Call FD264944 or says they want to call for that request:
 - Reverse-match the visible request prefix to the full request id
-- Ensure CURRENT AGENT VARIABLES.context.current_request_id points to that request
+- Before proceeding, clear every CURRENT AGENT VARIABLES.context key that starts with `current_`, then refill only the selected request's current_request_id and current_items from that same request message
 - Call the resolve_chat_phone tool with that request_id
 - After success, return the mechanic's phone number and shop name to the dealer in a short Hinglish reply
 - If contact details cannot be resolved, say so briefly and ask them to try again
@@ -1499,9 +1503,10 @@ If dealer taps Send Quote or says they want to quote:
 Before continuing, ensure CURRENT AGENT VARIABLES.context.current_request_id and current_items contain the active request.
 Use that saved request context for all later quote submission actions.
 If the latest visible request broadcast in recent chat has not yet been saved, call `manage_variables` first to fill current_request_id and current_items before asking for price.
-If current_request_id belongs to an older request and a newer broadcast is now active, replace current_request_id and current_items with the latest request before continuing.
-Whenever the dealer selects a new request by prefix or button, refresh current_items from that same selected request message or matched request record immediately. Do not keep older parts from a previous request.
-Do not ask the first price question until current_request_id and relevant current_items are saved.
+If the dealer clicked or typed a request-prefixed selector like `Send Quote FD264944`, reverse-match that 8-character prefix against previous request messages in chat and CURRENT AGENT VARIABLES.context.current_selection_map, then fully clear every CURRENT AGENT VARIABLES.context key that starts with `current_`.
+After that full clear, refill only the newly selected request's current_request_id, current_items, and selected-request details from that same request message or matched request record.
+Do not keep price, part type, stock status, discount, totals, dealer id, mechanic id, quote id, or any other current_* values from an older request.
+Do not ask the first price question until that full clear-and-refill step is complete.
 
 Collect quote details part-by-part.
 Do not confirm early.
@@ -3050,9 +3055,12 @@ def _resolve_prefixed_selection_from_messages(variables: Dict[str, Any], message
                 "request_id": entry.get("request_id") or "",
                 "quote_id": entry.get("quote_id") or "",
                 "dealer_id": entry.get("dealer_id") or "",
+                "mechanic_id": entry.get("mechanic_id") or "",
                 "prefix": str(entry.get("prefix") or ""),
                 "label": str(entry.get("label") or label),
                 "summary": str(entry.get("summary") or ""),
+                "items": entry.get("items") if isinstance(entry.get("items"), list) else [],
+                "raw_text": "",
             }
             if not candidate["prefix"]:
                 candidate["prefix"] = _uuid_prefix(candidate["id"] or candidate["request_id"] or candidate["quote_id"])
@@ -3061,7 +3069,11 @@ def _resolve_prefixed_selection_from_messages(variables: Dict[str, Any], message
     for message in messages or []:
         if _is_runtime_context_message(message):
             continue
-        candidates.extend(_extract_selection_candidates_from_text(_safe_content_to_str(getattr(message, "content", ""))))
+        content = _safe_content_to_str(getattr(message, "content", ""))
+        for extracted in _extract_selection_candidates_from_text(content):
+            if isinstance(extracted, dict):
+                extracted["raw_text"] = content
+                candidates.append(extracted)
 
     deduped: Dict[str, Dict[str, Any]] = {}
     for candidate in candidates:
@@ -3087,18 +3099,7 @@ def _resolve_prefixed_selection_from_messages(variables: Dict[str, Any], message
             continue
 
         match = matches[0]
-        if match["type"] == "request":
-            context["current_request_id"] = match["request_id"] or match["id"]
-            if isinstance(match.get("items"), list) and match["items"]:
-                context["current_items"] = [_normalize_item(item) for item in match["items"] if isinstance(item, dict)]
-        elif match["type"] == "quote":
-            context["current_quote_id"] = match["quote_id"] or match["id"]
-            if match.get("request_id"):
-                context["current_request_id"] = match["request_id"]
-            if match.get("dealer_id"):
-                context["current_dealer_id"] = match["dealer_id"]
-            if isinstance(match.get("items"), list) and match["items"]:
-                context["current_items"] = [_normalize_item(item) for item in match["items"] if isinstance(item, dict)]
+        context = _reset_context_for_selected_candidate(match)
         break
 
     resolved["context"] = _normalize_context(context)
@@ -3140,6 +3141,68 @@ def _resolve_active_request_candidate(variables: Dict[str, Any], messages: List[
             return request_candidates[-1]
 
     return None
+
+
+def _reset_context_for_selected_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    fresh = _blank_context()
+    candidate_type = str(candidate.get("type") or "").strip().lower()
+    selected_id = str(candidate.get("id") or "").strip()
+    selected_label = str(candidate.get("label") or candidate.get("prefix") or selected_id).strip()
+
+    if candidate_type == "request":
+        request_id = str(candidate.get("request_id") or selected_id).strip()
+        if request_id:
+            fresh["current_request_id"] = request_id
+            fresh["current_selection_map"] = {
+                selected_label: {
+                    "id": request_id,
+                    "type": "request",
+                    "request_id": request_id,
+                    "label": selected_label,
+                    "summary": str(candidate.get("summary") or ""),
+                    "prefix": str(candidate.get("prefix") or _uuid_prefix(request_id)).strip().upper(),
+                }
+            }
+        if isinstance(candidate.get("items"), list) and candidate["items"]:
+            fresh["current_items"] = [_normalize_item(item) for item in candidate["items"] if isinstance(item, dict)]
+        return _normalize_context(fresh)
+
+    if candidate_type == "quote":
+        quote_id = str(candidate.get("quote_id") or selected_id).strip()
+        request_id = str(candidate.get("request_id") or "").strip()
+        dealer_id = str(candidate.get("dealer_id") or "").strip()
+        mechanic_id = str(candidate.get("mechanic_id") or "").strip()
+        if quote_id:
+            fresh["current_quote_id"] = quote_id
+            entry = {
+                "id": quote_id,
+                "type": "quote",
+                "quote_id": quote_id,
+                "label": selected_label,
+                "summary": str(candidate.get("summary") or ""),
+                "prefix": str(candidate.get("prefix") or _uuid_prefix(quote_id)).strip().upper(),
+            }
+            if request_id:
+                entry["request_id"] = request_id
+            if dealer_id:
+                entry["dealer_id"] = dealer_id
+            if mechanic_id:
+                entry["mechanic_id"] = mechanic_id
+            fresh["current_selection_map"] = {selected_label: entry}
+        if request_id:
+            fresh["current_request_id"] = request_id
+        if dealer_id:
+            fresh["current_dealer_id"] = dealer_id
+        if mechanic_id:
+            fresh["current_mechanic_id"] = mechanic_id
+        if isinstance(candidate.get("items"), list) and candidate["items"]:
+            fresh["current_items"] = [_normalize_item(item) for item in candidate["items"] if isinstance(item, dict)]
+        summary = _extract_financial_summary_from_preview(str(candidate.get("raw_text") or ""))
+        if summary:
+            fresh["current_totals"] = summary
+        return _normalize_context(fresh)
+
+    return _normalize_context(fresh)
 
 
 def _context_lookup(variables: Dict[str, Any], key: str) -> Any:
