@@ -3105,6 +3105,43 @@ def _resolve_prefixed_selection_from_messages(variables: Dict[str, Any], message
     return _normalize_variables(resolved)
 
 
+def _resolve_active_request_candidate(variables: Dict[str, Any], messages: List[BaseMessage]) -> Optional[Dict[str, Any]]:
+    resolved = _normalize_variables(variables)
+    context = resolved.get("context", {})
+
+    selection_map = context.get("current_selection_map")
+    if isinstance(selection_map, dict):
+        request_candidates: List[Dict[str, Any]] = []
+        for label, entry in selection_map.items():
+            if not isinstance(entry, dict):
+                continue
+            candidate_type = str(entry.get("type") or "").strip().lower()
+            request_id = str(entry.get("request_id") or entry.get("id") or "").strip()
+            if candidate_type != "request" or not request_id:
+                continue
+            request_candidates.append({
+                "type": "request",
+                "id": request_id,
+                "request_id": request_id,
+                "prefix": str(entry.get("prefix") or _uuid_prefix(request_id)).strip().upper(),
+                "label": str(entry.get("label") or label),
+                "summary": str(entry.get("summary") or ""),
+                "items": entry.get("items") if isinstance(entry.get("items"), list) else [],
+            })
+        if request_candidates:
+            return request_candidates[-1]
+
+    for message in reversed(messages or []):
+        if _is_runtime_context_message(message):
+            continue
+        extracted = _extract_selection_candidates_from_text(_safe_content_to_str(getattr(message, "content", "")))
+        request_candidates = [candidate for candidate in extracted if candidate.get("type") == "request" and candidate.get("request_id")]
+        if request_candidates:
+            return request_candidates[-1]
+
+    return None
+
+
 def _context_lookup(variables: Dict[str, Any], key: str) -> Any:
     variables = _normalize_variables(variables)
     aliases = {
@@ -3298,7 +3335,38 @@ def build_static_tools(
                     })
 
                 current_vars = _normalize_variables(request_state.get("variables", {}))
+                if _name == "submit_quote":
+                    context = current_vars.setdefault("context", _blank_context())
+                    if context.get("current_request_id") in (None, ""):
+                        active_request = _resolve_active_request_candidate(current_vars, request_state.get("messages", []))
+                        if active_request and active_request.get("request_id"):
+                            context["current_request_id"] = str(active_request["request_id"])
+                            if isinstance(active_request.get("items"), list) and active_request["items"]:
+                                context["current_items"] = [
+                                    _normalize_item(item) for item in active_request["items"] if isinstance(item, dict)
+                                ]
+                            current_vars["context"] = _normalize_context(context)
+                            request_state["variables"] = _apply_variables_patch(
+                                request_state.get("variables", {}),
+                                {"context": current_vars["context"]},
+                            )
+
                 payload = _fill_payload_from_context(_name, payload, current_vars)
+
+                if _name == "submit_quote":
+                    authoritative_request_id = str(
+                        _normalize_variables(current_vars).get("context", {}).get("current_request_id") or ""
+                    ).strip()
+                    if not authoritative_request_id:
+                        return json.dumps({
+                            "ok": False,
+                            "needs_input": True,
+                            "question": "Kaunse request ke liye quote bhejna hai? Pehle wahi request select kariye.|Main Menu",
+                            "event_id": event_id,
+                            "error": "missing_active_request_id",
+                        }, ensure_ascii=False)
+                    payload["request_id"] = authoritative_request_id
+
                 payload["context_variables"] = _safe_deepcopy(current_vars)
                 _log_tool_identity_check(_name, request_state, current_vars, payload)
 
