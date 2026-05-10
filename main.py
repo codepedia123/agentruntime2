@@ -2483,6 +2483,57 @@ def _normalize_item(value: Any) -> Dict[str, Any]:
     return normalized
 
 
+def _item_identity_key(value: Any, index: int = 0) -> str:
+    item = _normalize_item(value)
+    return "|".join(
+        [
+            _normalized_key(item.get("part_name")),
+            _normalized_key(item.get("company")),
+            _normalized_key(item.get("model")),
+            _normalized_key(item.get("year")),
+        ]
+    ) or f"idx:{index}"
+
+
+def _merge_context_items(base_items: Any, incoming_items: Any) -> List[Dict[str, Any]]:
+    base_norm = [_normalize_item(item) for item in (base_items or []) if isinstance(item, dict)]
+    incoming_norm = [_normalize_item(item) for item in (incoming_items or []) if isinstance(item, dict)]
+
+    if not base_norm:
+        return incoming_norm
+    if not incoming_norm:
+        return base_norm
+
+    merged = [_safe_deepcopy(item) for item in base_norm]
+    key_to_index = {_item_identity_key(item, idx): idx for idx, item in enumerate(merged)}
+
+    for idx, incoming in enumerate(incoming_norm):
+        incoming_key = _item_identity_key(incoming, idx)
+        target_index = key_to_index.get(incoming_key)
+
+        if target_index is None and idx < len(merged):
+            # Fallback to positional merge when the identity key is too sparse
+            # but the dealer is clearly progressing through the existing request list.
+            target_index = idx
+
+        if target_index is None:
+            merged.append(_safe_deepcopy(incoming))
+            key_to_index[incoming_key] = len(merged) - 1
+            continue
+
+        target = merged[target_index]
+        for field_key, field_value in incoming.items():
+            if field_key == "other_brand_details" and isinstance(field_value, dict):
+                details = target.setdefault("other_brand_details", _safe_deepcopy(ITEM_SCHEMA["other_brand_details"]))
+                for detail_key, detail_value in field_value.items():
+                    if detail_value not in (None, ""):
+                        details[detail_key] = detail_value
+            elif field_value not in (None, ""):
+                target[field_key] = field_value
+
+    return [_normalize_item(item) for item in merged]
+
+
 def _normalize_selection_map(value: Any) -> Dict[str, Any]:
     if isinstance(value, dict):
         normalized: Dict[str, Any] = {}
@@ -2610,6 +2661,30 @@ def _normalize_variables_patch(value: Any) -> Dict[str, Any]:
     if has_context_patch:
         variables["context"] = _normalize_context(context_source)
     return variables
+
+
+def _apply_variables_patch(current_variables: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    working = _normalize_variables(current_variables if isinstance(current_variables, dict) else {})
+    normalized_patch = _normalize_variables_patch(patch if isinstance(patch, dict) else {})
+
+    incoming_context = normalized_patch.get("context") if isinstance(normalized_patch.get("context"), dict) else None
+    if incoming_context is not None:
+        working_context = working.setdefault("context", _blank_context())
+        incoming_context_copy = _safe_deepcopy(incoming_context)
+
+        if "current_items" in incoming_context_copy:
+            working_context["current_items"] = _merge_context_items(
+                working_context.get("current_items", []),
+                incoming_context_copy.get("current_items", []),
+            )
+            incoming_context_copy.pop("current_items", None)
+
+        _deep_merge_values(working_context, incoming_context_copy)
+        normalized_patch = dict(normalized_patch)
+        normalized_patch.pop("context", None)
+
+    _deep_merge_values(working, normalized_patch)
+    return _normalize_variables(working)
 
 
 def _extract_labeled_uuid(text: str, label: str) -> Optional[str]:
@@ -2936,8 +3011,7 @@ def _hydrate_variables_from_messages(variables: Dict[str, Any], messages: List[B
         content = _safe_content_to_str(getattr(message, "content", ""))
         patch = _extract_context_patch_from_text(content)
         if patch:
-            _deep_merge_values(hydrated, patch)
-            hydrated = _normalize_variables(hydrated)
+            hydrated = _apply_variables_patch(hydrated, patch)
     return _normalize_variables(hydrated)
 
 
@@ -3106,10 +3180,20 @@ def _fill_payload_from_context(
     return payload
 
 
+def _find_incomplete_quote_item(items: Any) -> Optional[Dict[str, Any]]:
+    normalized_items = [_normalize_item(item) for item in (items or []) if isinstance(item, dict)]
+    for item in normalized_items:
+        if item.get("price") in (None, ""):
+            return {"item": item, "field": "price"}
+        if item.get("part_type") in (None, ""):
+            return {"item": item, "field": "part_type"}
+        if item.get("stock_status") in (None, ""):
+            return {"item": item, "field": "stock_status"}
+    return None
+
+
 def _apply_variable_updates(current_variables: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
-    working = _safe_deepcopy(current_variables if isinstance(current_variables, dict) else {})
-    _deep_merge_values(working, updates if isinstance(updates, dict) else {})
-    return _normalize_variables(working)
+    return _apply_variables_patch(current_variables, updates if isinstance(updates, dict) else {})
 
 
 def build_manage_variables_tool(request_state: Dict[str, Any]) -> StructuredTool:
@@ -3217,6 +3301,26 @@ def build_static_tools(
                 payload = _fill_payload_from_context(_name, payload, current_vars)
                 payload["context_variables"] = _safe_deepcopy(current_vars)
                 _log_tool_identity_check(_name, request_state, current_vars, payload)
+
+                if _name == "submit_quote":
+                    incomplete = _find_incomplete_quote_item(payload.get("quote_details"))
+                    if incomplete:
+                        item = incomplete["item"]
+                        part_name = str(item.get("part_name") or "Is part").strip()
+                        field = str(incomplete.get("field") or "").strip()
+                        if field == "price":
+                            question = f"{part_name} ka price bataiye (per piece, ₹ mein)|Cancel"
+                        elif field == "part_type":
+                            question = f"{part_name} ka part type kya hai?|Genuine,Other Brand"
+                        else:
+                            question = f"{part_name} stock mein hai abhi?|Haan Available,Arrange Karna Padega"
+                        return json.dumps({
+                            "ok": False,
+                            "needs_input": True,
+                            "question": question,
+                            "event_id": event_id,
+                            "error": f"incomplete_quote_details:{field}",
+                        }, ensure_ascii=False)
 
                 try:
                     resp = requests.post(_url, json=payload, timeout=20)
@@ -3601,6 +3705,9 @@ def _sanitize_reply_text(reply_text: str) -> str:
     if not text:
         return text
 
+    text = re.sub(r"\n?\s*manage_variables\s*\(\{.*?\}\)\s*$", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+    text = re.sub(r"\n\s*manage_variables\s*\(\{.*?\}\)", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+
     if "|" in text:
         body, tail = text.split("|", 1)
         body = body.rstrip()
@@ -3622,6 +3729,35 @@ def _sanitize_reply_text(reply_text: str) -> str:
             return "\n".join(lines).strip()
 
     return text
+
+
+def _guard_dealer_quote_reply(reply_text: str, variables: Dict[str, Any], state: str) -> Tuple[str, str]:
+    if PORT != 8002:
+        return reply_text, state
+
+    text = (reply_text or "").strip()
+    if not text:
+        return text, state
+
+    missing_price = re.search(r"(?P<part>[^\n@]+?)\s*@\s*₹\s*\(price abhi missing\)", text, flags=re.IGNORECASE)
+    if missing_price:
+        part_name = missing_price.group("part").strip(" :-")
+        return f"{part_name} ka price bataiye (per piece, ₹ mein)|Cancel", "quote_flow"
+
+    missing_type = re.search(r"(?P<part>[^\n@]+?);\s*Type:\s*\(abhi missing\)", text, flags=re.IGNORECASE)
+    if missing_type:
+        part_name = missing_type.group("part").split("@", 1)[0].strip(" :-")
+        return f"{part_name} ka part type kya hai?|Genuine,Other Brand", "quote_flow"
+
+    missing_stock = re.search(r"(?P<part>[^\n@]+?);\s*Type:\s*[^;\n]+\s*;\s*Stock:\s*\(abhi missing\)", text, flags=re.IGNORECASE)
+    if missing_stock:
+        part_name = missing_stock.group("part").split("@", 1)[0].strip(" :-")
+        return f"{part_name} stock mein hai abhi?|Haan Available,Arrange Karna Padega", "quote_flow"
+
+    if "(price abhi missing)" in text or "(abhi missing)" in text:
+        return "Abhi kuch quote details missing hain. Jis part ki detail pending hai, woh bataiye.|Cancel", "quote_flow"
+
+    return reply_text, state
 
 
 def _build_context_payload(
@@ -3752,9 +3888,9 @@ def run_agent(
     context_vars = context.get("variables", {}) if isinstance(context.get("variables"), dict) else {}
     initial_vars = _normalize_variables(_THREAD_VARIABLE_STORE.get(thread_id, {}))
     if context_vars:
-        _deep_merge_values(initial_vars, _normalize_variables_patch(dict(context_vars)))
+        initial_vars = _apply_variables_patch(initial_vars, dict(context_vars))
     if isinstance(variables, dict):
-        _deep_merge_values(initial_vars, _normalize_variables_patch(variables))
+        initial_vars = _apply_variables_patch(initial_vars, variables)
     initial_vars = _normalize_variables(initial_vars)
     request_state = {
         "thread_id": thread_id,
@@ -3832,6 +3968,7 @@ def run_agent(
             msgs + [AIMessage(content=reply_text)],
         )
         fallback_state = _normalize_state_name(fallback_vars.get("current_state")) or active_state
+        reply_text, fallback_state = _guard_dealer_quote_reply(reply_text, fallback_vars, fallback_state)
         fallback_vars["current_state"] = fallback_state
         fallback_vars = _normalize_variables(fallback_vars)
         fallback_context = _build_context_payload(
@@ -3856,6 +3993,7 @@ def run_agent(
             msgs + [AIMessage(content=error_reply)],
         )
         error_state = _normalize_state_name(error_vars.get("current_state")) or active_state
+        error_reply, error_state = _guard_dealer_quote_reply(error_reply, error_vars, error_state)
         error_vars["current_state"] = error_state
         error_vars = _normalize_variables(error_vars)
         error_context = _build_context_payload(
@@ -3897,14 +4035,20 @@ def run_agent(
     final_vars = _normalize_variables(initial_vars)
     try:
         if isinstance(state, dict) and isinstance(state.get("variables"), dict):
-            _deep_merge_values(final_vars, _normalize_variables_patch(state["variables"]))
+            final_vars = _apply_variables_patch(final_vars, state["variables"])
     except Exception:
         pass
-    _deep_merge_values(final_vars, _normalize_variables_patch(_safe_deepcopy(request_state["variables"])))
+    final_vars = _apply_variables_patch(final_vars, _safe_deepcopy(request_state["variables"]))
 
     final_messages = out_msgs if isinstance(out_msgs, list) and out_msgs else msgs + [AIMessage(content=reply_text)]
     final_vars = _hydrate_variables_from_messages(final_vars, final_messages)
     response_state = _normalize_state_name(final_vars.get("current_state")) or active_state
+    reply_text, response_state = _guard_dealer_quote_reply(reply_text, final_vars, response_state)
+    if isinstance(final_messages, list) and final_messages:
+        if isinstance(final_messages[-1], AIMessage):
+            final_messages = list(final_messages[:-1]) + [AIMessage(content=reply_text)]
+        elif not out_msgs:
+            final_messages = list(final_messages) + [AIMessage(content=reply_text)]
     final_vars["current_state"] = response_state
     final_vars = _normalize_variables(final_vars)
     final_context = _build_context_payload(
