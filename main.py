@@ -2561,7 +2561,7 @@ def _normalize_current_items(value: Any) -> Dict[str, Any]:
     if discount in (None, ""):
         discount = value.get("order_discount")
     if discount not in (None, ""):
-        normalized["discount"] = str(discount)
+        normalized["discount"] = _normalize_discount_input(discount)
 
     total_amount = value.get("total_amount")
     if total_amount in (None, ""):
@@ -2671,15 +2671,31 @@ def _stringify_amount(value: float) -> str:
     return f"{rounded:.2f}".rstrip("0").rstrip(".")
 
 
+def _normalize_discount_input(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    percent_match = re.search(r"(-?\d+(?:\.\d+)?)\s*%", text)
+    if percent_match:
+        return f"{_stringify_amount(float(percent_match.group(1)))}%"
+
+    amount = _parse_numeric_amount(text)
+    if amount > 0:
+        return _stringify_amount(amount)
+    return ""
+
+
 def _extract_discount_amount(discount_input: Any, gross_total: float, final_total: float) -> float:
-    text = str(discount_input or "").strip()
+    text = _normalize_discount_input(discount_input)
     if not text:
         if gross_total > 0 and final_total > 0 and gross_total >= final_total:
             return max(gross_total - final_total, 0.0)
         return 0.0
 
     if "%" in text:
-        pct = _parse_numeric_amount(text)
+        percent_match = re.search(r"(-?\d+(?:\.\d+)?)\s*%", text)
+        pct = float(percent_match.group(1)) if percent_match else 0.0
         if pct > 0 and gross_total > 0:
             return max(gross_total * pct / 100.0, 0.0)
 
@@ -2724,13 +2740,13 @@ def _build_canonical_quote_details(current_items: Any, incoming_quote_details: A
 
     totals = dict(current_totals) if isinstance(current_totals, dict) else {}
     shared = _get_current_items_shared(current_items)
-    discount_input = str(
+    discount_input = _normalize_discount_input(
         shared.get("discount")
         or totals.get("order_discount")
         or incoming_summary.get("discount_input")
         or incoming_summary.get("discount")
         or ""
-    ).strip()
+    )
     final_total = _parse_numeric_amount(
         shared.get("total_amount")
         or totals.get("final_total")
