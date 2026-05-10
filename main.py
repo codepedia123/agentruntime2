@@ -305,7 +305,10 @@ Show only the real selected quote.|Confirm Order,Cancel
 If user confirms the selected quote:
 → Call the create-order tool
 → Use the selected quote's Quote ID, Request ID, Dealer ID, and CURRENT AGENT VARIABLES mechanic_id
-→ Present the returned payment link and returned amount if present
+→ Present the returned payment link
+→ If the tool returns a pricing breakdown string in `amount`, show that exact pricing breakdown string exactly as returned
+→ Do not replace that returned breakdown with only a single total amount line
+→ Only if no pricing breakdown string is returned, fall back to a single total amount if present
 → Mention: Is amount mein delivery aur platform fees included hain. Discount is amount mein exclude hai; order complete hone ke 1 din ke andar discount automatically receive ho jayega.
 → Tell the user they will be notified when payment succeeds and the order is created
 
@@ -313,7 +316,7 @@ If user confirms the selected quote:
 
 After create-order succeeds:
 
-Amount: ₹{amount}
+Pricing Details: {returned_amount_breakdown_or_amount}
 Complete payment here: {payment_url}
 
 Is amount mein delivery aur platform fees included hain. Discount is amount mein exclude hai; order complete hone ke 1 din ke andar discount automatically receive ho jayega.
@@ -532,6 +535,7 @@ ALWAYS format replies as:
 - Do not claim success unless a tool result explicitly confirms it.
 - If a tool returns needs_input=true with a question, ask only that question and stop.
 - Use CURRENT AGENT VARIABLES as source of truth for user facts.
+- When a tool returns a user-facing pricing or amount string, especially a breakdown string like `Parts: ₹... | Delivery: ₹... | Platform: ₹... | Total: ₹...`, reproduce that returned string exactly. Do not simplify it into only one total amount unless no breakdown string exists.
 - Use CURRENT AGENT VARIABLES.context as source of truth for active IDs.
 
 ═══ ACTIVE STATE INSTRUCTIONS ═══
@@ -649,8 +653,9 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Get quote_id from CURRENT AGENT VARIABLES.context.current_quote_id and dealer_id from CURRENT AGENT VARIABLES.context.current_dealer_id. "
         "If the latest previous assistant message is a new quote received message with one quote and the user accepts it, save that message's Request ID, Quote ID, and Dealer ID into current_request_id, current_quote_id, and current_dealer_id before showing selected quote confirmation. "
         "If multiple quotes are visible and the user only says something vague like accept quote, do not guess; first make them choose a quote using a visible 8-character quote-id prefix and match that prefix back to the real quote_id from previous chat or saved selection data. "
-        "The tool returns an order/payment session with a URL and may include an amount. "
-        "Present that URL to the user and include the returned amount if present. "
+        "The tool returns an order/payment session with a URL and may include a pricing breakdown string in `amount`, such as `Parts: ₹200 | Delivery: ₹11.4 | Platform: ₹10 | Total: ₹221.4`. "
+        "When that pricing breakdown string is present, reproduce that exact returned pricing breakdown in the user-facing reply. Do not collapse it to only one total amount line. "
+        "Present the returned URL to the user. If both a breakdown string and a total amount are available, prefer the breakdown string exactly as returned by the tool. "
         "Also say in Hinglish: Is amount mein delivery aur platform fees included hain. Discount is amount mein exclude hai; order complete hone ke 1 din ke andar discount automatically receive ho jayega. "
         "Tell the user they will be notified once payment is successful and the order is created."
     ),
