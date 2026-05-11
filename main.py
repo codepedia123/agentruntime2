@@ -782,7 +782,7 @@ QUOTE REQUIRED FIELDS:
   - Bike Model name, example: Splendor
   - Bike Model year, example: 2022
   - Bike model variant, example: Pro / BS6 / Plus
-- Stock Status (Available / Arrange Karna Padega)
+- Stock Status (Haan Available only)
 
 Optional:
 - Part photo
@@ -913,7 +913,7 @@ Do not ask Other Brand details for parts marked Genuine.
 If the request has multiple items:
 - Complete all required quote fields for the current unique part before moving to the next unique part
 - Ask price, part type, Other Brand details if needed, and stock status for each unique part separately
-- Ask discount only once for the whole order after all unique parts have price, part type, and stock status
+- Ask discount only once for the whole order after all unique parts have price, part type, and stock status as `Haan Available`
 - Use the item's actual qty only while calculating the total later
 
 Price collection rules:
@@ -962,13 +962,17 @@ Other Brand details:
 
 Step 4 - For the same current unique part, after part type and Other Brand details if needed, ask Stock Status:
 
-{Part Name} stock mein hai abhi?|Haan Available,Arrange Karna Padega
+{Part Name} stock mein hai abhi?|Haan Available
+
+Continue only if the dealer confirms `Haan Available`.
+If the dealer says the part is not available, needs arranging later, or gives any equivalent unavailable response, do not continue the quote flow for that part or request.
+Instead, clearly say the quote can continue only when the part is currently available and ask them to cancel for now.
 
 Step 5 - If more unique parts remain:
 
 Move to the next unique part and repeat Step 1 through Step 4 for that part.
 
-Step 6 - After all unique parts have price, part type, Other Brand details if needed, and stock status, ask Discount once for the whole order:
+Step 6 - After all unique parts have price, part type, Other Brand details if needed, and stock status as `Haan Available`, ask Discount once for the whole order:
 
 Pure order par discount dena chahenge?|Haan,Skip
 
@@ -1540,7 +1544,7 @@ Do not ask Other Brand details for parts marked Genuine.
 If the request has multiple items:
 - Complete all required quote fields for the current unique part before moving to the next unique part
 - Ask price, part type, Other Brand details if needed, and stock status for each unique part separately
-- Ask discount only once for the whole order after all unique parts have price, part type, and stock status
+- Ask discount only once for the whole order after all unique parts have price, part type, and stock status as `Haan Available`
 - Use the item's actual qty only while calculating the total later
 
 Price collection rules:
@@ -1589,13 +1593,17 @@ Other Brand details:
 
 Step 4 - For the same current unique part, after part type and Other Brand details if needed, ask Stock Status:
 
-{Part Name} stock mein hai abhi?|Haan Available,Arrange Karna Padega
+{Part Name} stock mein hai abhi?|Haan Available
+
+Continue only if the dealer confirms `Haan Available`.
+If the dealer says the part is not available, needs arranging later, or gives any equivalent unavailable response, do not continue the quote flow for that part or request.
+Instead, clearly say the quote can continue only when the part is currently available and ask them to cancel for now.
 
 Step 5 - If more unique parts remain:
 
 Move to the next unique part and repeat Step 1 through Step 4 for that part.
 
-Step 6 - After all unique parts have price, part type, Other Brand details if needed, and stock status, ask Discount once for the whole order:
+Step 6 - After all unique parts have price, part type, Other Brand details if needed, and stock status as `Haan Available`, ask Discount once for the whole order:
 
 Pure order par discount dena chahenge?|Haan,Skip
 
@@ -2290,7 +2298,7 @@ SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
         "{ discount_input, discount_amount, gross_total, final_total, items }. "
         "Inside quote_details.items, each item object should contain: "
         "part_name, company, model, year, quantity, price, part_type (Genuine/Other Brand), "
-        "stock_status (Available/Arrange Karna Padega), other_brand_details when applicable, and line_total. "
+        "stock_status (`Haan Available` only), other_brand_details when applicable, and line_total. "
         "Collect price, part_type, and stock_status separately for each unique requested part. "
         "Collect discount decision only once for the whole order after all requested parts have required quote fields. "
         "Only use part_type values Genuine or Other Brand. "
@@ -3590,8 +3598,11 @@ def _find_incomplete_quote_item(items: Any) -> Optional[Dict[str, Any]]:
             return {"item": item, "field": "price"}
         if item.get("part_type") in (None, ""):
             return {"item": item, "field": "part_type"}
-        if item.get("stock_status") in (None, ""):
+        stock_status = str(item.get("stock_status") or "").strip()
+        if stock_status in (None, ""):
             return {"item": item, "field": "stock_status"}
+        if stock_status.lower() != "haan available":
+            return {"item": item, "field": "stock_available_required"}
     return None
 
 
@@ -3747,8 +3758,10 @@ def build_static_tools(
                             question = f"{part_name} ka price bataiye (per piece, ₹ mein)|Cancel"
                         elif field == "part_type":
                             question = f"{part_name} ka part type kya hai?|Genuine,Other Brand"
+                        elif field == "stock_status":
+                            question = f"{part_name} stock mein hai abhi?|Haan Available"
                         else:
-                            question = f"{part_name} stock mein hai abhi?|Haan Available,Arrange Karna Padega"
+                            question = "Quote tabhi continue hoga jab part abhi available ho. Part available ho to `Haan Available` bhejiye, warna abhi cancel kariye.|Cancel"
                         return json.dumps({
                             "ok": False,
                             "needs_input": True,
@@ -4187,7 +4200,7 @@ def _guard_dealer_quote_reply(reply_text: str, variables: Dict[str, Any], state:
     missing_stock = re.search(r"(?P<part>[^\n@]+?);\s*Type:\s*[^;\n]+\s*;\s*Stock:\s*\(abhi missing\)", text, flags=re.IGNORECASE)
     if missing_stock:
         part_name = missing_stock.group("part").split("@", 1)[0].strip(" :-")
-        return f"{part_name} stock mein hai abhi?|Haan Available,Arrange Karna Padega", "quote_flow"
+        return f"{part_name} stock mein hai abhi?|Haan Available", "quote_flow"
 
     if "(price abhi missing)" in text or "(abhi missing)" in text:
         return "Abhi kuch quote details missing hain. Jis part ki detail pending hai, woh bataiye.|Cancel", "quote_flow"
