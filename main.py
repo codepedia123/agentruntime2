@@ -4525,28 +4525,6 @@ def _build_context_payload(
     return payload
 
 
-def _extract_tool_names_from_messages(messages: List[BaseMessage]) -> List[str]:
-    tool_names: List[str] = []
-    seen: set[str] = set()
-
-    for message in messages or []:
-        if isinstance(message, AIMessage):
-            for tool_call in getattr(message, "tool_calls", []) or []:
-                if not isinstance(tool_call, dict):
-                    continue
-                name = str(tool_call.get("name") or "").strip()
-                if name and name not in seen:
-                    seen.add(name)
-                    tool_names.append(name)
-        elif isinstance(message, ToolMessage):
-            name = str(getattr(message, "name", "") or "").strip()
-            if name and name not in seen:
-                seen.add(name)
-                tool_names.append(name)
-
-    return tool_names
-
-
 def _extract_token_usage(response_obj: Any) -> Dict[str, int]:
     input_tokens = 0
     output_tokens = 0
@@ -4830,7 +4808,6 @@ def run_agent(
         )
     except GraphRecursionError as ge:
         # Fallback to direct LLM call without tools
-        print(f"[AGENT TOOLS USED] thread_id={thread_id} path=fallback tools=[]")
         fallback_token_usage = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -4882,7 +4859,6 @@ def run_agent(
             "tokens": token_breakdown,
         }
     except Exception as e:
-        print(f"[AGENT TOOLS USED] thread_id={thread_id} path=error tools=[] error={str(e)}")
         error_reply = _sanitize_reply_text(f"Error: {str(e)}")
         error_vars = _hydrate_variables_from_messages(
             _safe_deepcopy(request_state["variables"]),
@@ -4927,8 +4903,6 @@ def run_agent(
     out_msgs: List[BaseMessage] = []
     try:
         out_msgs = state.get("messages", []) if isinstance(state, dict) else []
-        used_tool_names = _extract_tool_names_from_messages(out_msgs)
-        print(f"[AGENT TOOLS USED] thread_id={thread_id} path=success tools={json.dumps(used_tool_names, ensure_ascii=False)}")
         last_ai_message: Optional[AIMessage] = None
         for m in reversed(out_msgs):
             if isinstance(m, AIMessage):
