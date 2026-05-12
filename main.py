@@ -524,6 +524,15 @@ You are a TASK EXECUTION SYSTEM. Not conversational. Not explanatory.
 - When the user replies to the question you just asked in the immediately previous assistant turn, first interpret that reply against that exact pending question, then update the matching CURRENT AGENT VARIABLES.context schema field before asking the next question or calling the next tool.
 - Do not wait for backend recovery. You must explicitly persist each newly learned value into the correct current_* field with manage_variables as soon as it is learned.
 - If the reply is ambiguous, invalid, off-topic, or does not cleanly answer the immediately previous pending question, do not write it into context. Ask one short corrective question instead.
+- In request flow, quote flow, and order flow, CURRENT AGENT VARIABLES.context.current_items is the live step-by-step working draft.
+- For item-level draft updates, always use the `update_current_item` tool with:
+  1. `part_name` as the item identifier
+  2. `item_updates` as one nested object of only the item fields that changed
+- Never write dotted keys like `context.current_items.items.0.price` or any flattened path-like key.
+- Use `manage_variables` for non-item context values such as current_request_id, current_quote_id, current_order_id, current_selection_map, current_totals, discount, notes, and state.
+- Every time the user gives one more usable item detail for the active request, quote, or order, immediately call `update_current_item` before moving to the next step.
+- Do not batch these updates until the end. Persist current_items incrementally after each valid user answer so the working draft always stays current.
+- If one user message gives multiple usable details for the same item, persist all of them in one `update_current_item` call before replying.
 - Treat current_selection_map and current_items as short-term working memory only. If the latest recent messages clearly show an in-progress request/quote/order flow but the required current_* selection or item memory for that flow is now missing or expired, do not pretend the flow can continue. Tell the user briefly that it expired and ask them to restart that exact flow from the correct entry point.
 - Use the restart guidance that matches the broken flow:
   request flow → ask them to create the request again from the start
@@ -1448,6 +1457,15 @@ You are a TASK EXECUTION SYSTEM. Not conversational. Not explanatory.
 - When the dealer replies to the question you just asked in the immediately previous assistant turn, first interpret that reply against that exact pending question, then update the matching CURRENT AGENT VARIABLES.context schema field before asking the next question or calling the next tool.
 - Do not wait for backend recovery. You must explicitly persist each newly learned price, part_type, stock_status, Other Brand detail, discount, note, or selected ID into the correct current_* schema field with manage_variables as soon as it is learned.
 - If the dealer reply is ambiguous, invalid, off-topic, or does not cleanly answer the immediately previous pending question, do not write it into context. Ask one short corrective question instead.
+- In request flow, quote flow, and order flow, CURRENT AGENT VARIABLES.context.current_items is the live step-by-step working draft.
+- For item-level draft updates, always use the `update_current_item` tool with:
+  1. `part_name` as the item identifier
+  2. `item_updates` as one nested object of only the item fields that changed
+- Never write dotted keys like `context.current_items.items.0.price` or any flattened path-like key.
+- Use `manage_variables` for non-item context values such as current_request_id, current_quote_id, current_order_id, current_selection_map, current_totals, discount, notes, and state.
+- Every time the dealer gives one more usable item detail for the active request, quote, or order, immediately call `update_current_item` before moving to the next step.
+- Do not batch these updates until the end. Persist current_items incrementally after each valid dealer answer so the working draft always stays current.
+- If one dealer message gives multiple usable details for the same item, persist all of them in one `update_current_item` call before replying.
 - Treat current_selection_map and current_items as short-term working memory only. If the latest recent messages clearly show an in-progress request/quote/order flow but the required current_* selection or item memory for that flow is now missing or expired, do not pretend the flow can continue. Tell the dealer briefly that it expired and ask them to restart that exact flow from the correct entry point.
 - Use the restart guidance that matches the broken flow:
   quote flow → ask them to open Active Requests again, select the request again, and restart the quote from the beginning
@@ -2407,6 +2425,18 @@ def get_active_agent_config() -> Dict[str, Any]:
 class ManageVariablesArgs(BaseModel):
     model_config = ConfigDict(extra="allow")
     updates: Optional[Dict[str, Any]] = None
+
+
+class UpdateCurrentItemArgs(BaseModel):
+    part_name: str = Field(..., description="Existing part_name inside CURRENT AGENT VARIABLES.context.current_items.items used to identify which item to update.")
+    item_updates: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Nested object of item fields to update for that matching part. "
+            "Use only item fields such as part_name, company, model, year, quantity, price, part_type, "
+            "stock_status, and other_brand_details."
+        ),
+    )
 
 # Best-effort per-process checkpoint store. Use Redis/Postgres for multi-worker production.
 _THREAD_VARIABLE_STORE: Dict[str, Dict[str, Any]] = {}
@@ -3766,6 +3796,56 @@ def _apply_variable_updates(current_variables: Dict[str, Any], updates: Dict[str
     return _apply_variables_patch(current_variables, updates if isinstance(updates, dict) else {})
 
 
+def _update_current_item_by_part_name(
+    current_variables: Dict[str, Any],
+    part_name: str,
+    item_updates: Dict[str, Any],
+) -> Dict[str, Any]:
+    variables = _normalize_variables(current_variables)
+    context = variables.setdefault("context", _blank_context())
+    current_items = _normalize_current_items(context.get("current_items"))
+    items = list(current_items.get("items", []))
+    target_key = _normalized_key(part_name)
+    if not target_key:
+        return variables
+
+    normalized_updates = _normalize_item(item_updates if isinstance(item_updates, dict) else {})
+    merged_items: List[Dict[str, Any]] = []
+    matched = False
+
+    for item in items:
+        normalized_item = _normalize_item(item)
+        if _normalized_key(normalized_item.get("part_name")) != target_key:
+            merged_items.append(normalized_item)
+            continue
+
+        matched = True
+        merged_item = _safe_deepcopy(normalized_item)
+        for field_key, field_value in normalized_updates.items():
+            if field_key == "other_brand_details" and isinstance(field_value, dict):
+                details = merged_item.setdefault("other_brand_details", _safe_deepcopy(ITEM_SCHEMA["other_brand_details"]))
+                for detail_key, detail_value in field_value.items():
+                    if detail_value not in (None, ""):
+                        details[detail_key] = detail_value
+            elif field_value not in (None, ""):
+                merged_item[field_key] = field_value
+        merged_items.append(merged_item)
+
+    if not matched:
+        return variables
+
+    return _apply_variables_patch(
+        variables,
+        {
+            "context": {
+                "current_items": {
+                    "items": merged_items,
+                }
+            }
+        },
+    )
+
+
 def build_manage_variables_tool(request_state: Dict[str, Any]) -> StructuredTool:
     """Build a request-local manage_variables tool bound to this invocation."""
     def manage_variables_local(updates: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Any:
@@ -3793,6 +3873,41 @@ def build_manage_variables_tool(request_state: Dict[str, Any]) -> StructuredTool
             "Do not save random chat text or full raw tool responses."
         ),
         args_schema=ManageVariablesArgs,
+    )
+
+
+def build_update_current_item_tool(request_state: Dict[str, Any]) -> StructuredTool:
+    """Build a request-local item update tool bound to this invocation."""
+    def update_current_item_local(part_name: str, item_updates: Optional[Dict[str, Any]] = None, **_: Any) -> Any:
+        request_state["variables"] = _update_current_item_by_part_name(
+            request_state.get("variables", {}),
+            part_name,
+            item_updates if isinstance(item_updates, dict) else {},
+        )
+        normalized_after = _normalize_variables(request_state.get("variables", {}))
+        matched_item = next(
+            (
+                item for item in _get_current_items_list(normalized_after.get("context", {}).get("current_items"))
+                if _normalized_key(item.get("part_name")) == _normalized_key(part_name)
+            ),
+            None,
+        )
+        return {
+            "ok": matched_item is not None,
+            "part_name": part_name,
+            "updated_item": matched_item,
+        }
+
+    return StructuredTool.from_function(
+        func=update_current_item_local,
+        name="update_current_item",
+        description=(
+            "Use this tool for item-level draft updates in request flow, quote flow, and order flow. "
+            "Identify the existing item by part_name and send a nested item_updates object containing only the fields that changed. "
+            "Never create dotted keys like context.current_items.items.0.price. "
+            "For price, type, stock status, quantity, model, company, year, or other_brand_details updates on one specific item, use this tool instead of manage_variables."
+        ),
+        args_schema=UpdateCurrentItemArgs,
     )
 
 
@@ -4009,8 +4124,9 @@ def _build_tools_for_active_state(
         ]
 
     manage_tool = build_manage_variables_tool(request_state)
+    update_item_tool = build_update_current_item_tool(request_state)
     static_tools = build_static_tools(static_tool_configs, request_state)
-    return [manage_tool] + static_tools
+    return [manage_tool, update_item_tool] + static_tools
 
 
 # ============================================================
