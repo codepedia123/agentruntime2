@@ -13,6 +13,7 @@ import traceback
 import urllib.parse
 import re
 import copy
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Annotated, Tuple
 from operator import ior
@@ -523,6 +524,11 @@ You are a TASK EXECUTION SYSTEM. Not conversational. Not explanatory.
 - When the user replies to the question you just asked in the immediately previous assistant turn, first interpret that reply against that exact pending question, then update the matching CURRENT AGENT VARIABLES.context schema field before asking the next question or calling the next tool.
 - Do not wait for backend recovery. You must explicitly persist each newly learned value into the correct current_* field with manage_variables as soon as it is learned.
 - If the reply is ambiguous, invalid, off-topic, or does not cleanly answer the immediately previous pending question, do not write it into context. Ask one short corrective question instead.
+- Treat current_selection_map and current_items as short-term working memory only. If the latest recent messages clearly show an in-progress request/quote/order flow but the required current_* selection or item memory for that flow is now missing or expired, do not pretend the flow can continue. Tell the user briefly that it expired and ask them to restart that exact flow from the correct entry point.
+- Use the restart guidance that matches the broken flow:
+  request flow → ask them to create the request again from the start
+  quote selection flow → ask them to open Request History or All Quotes and select the real request/quote again
+  order/acceptance flow → ask them to reopen the quote/order from the latest list and continue again
 
 ═══ OUTPUT FORMAT — MANDATORY ═══
 ALWAYS format replies as:
@@ -1442,6 +1448,10 @@ You are a TASK EXECUTION SYSTEM. Not conversational. Not explanatory.
 - When the dealer replies to the question you just asked in the immediately previous assistant turn, first interpret that reply against that exact pending question, then update the matching CURRENT AGENT VARIABLES.context schema field before asking the next question or calling the next tool.
 - Do not wait for backend recovery. You must explicitly persist each newly learned price, part_type, stock_status, Other Brand detail, discount, note, or selected ID into the correct current_* schema field with manage_variables as soon as it is learned.
 - If the dealer reply is ambiguous, invalid, off-topic, or does not cleanly answer the immediately previous pending question, do not write it into context. Ask one short corrective question instead.
+- Treat current_selection_map and current_items as short-term working memory only. If the latest recent messages clearly show an in-progress request/quote/order flow but the required current_* selection or item memory for that flow is now missing or expired, do not pretend the flow can continue. Tell the dealer briefly that it expired and ask them to restart that exact flow from the correct entry point.
+- Use the restart guidance that matches the broken flow:
+  quote flow → ask them to open Active Requests again, select the request again, and restart the quote from the beginning
+  request/order selection flow → ask them to reopen the relevant request/order list and select the live item again
 
 ═══ OUTPUT FORMAT — MANDATORY ═══
 ALWAYS format replies as:
@@ -2401,6 +2411,7 @@ class ManageVariablesArgs(BaseModel):
 # Best-effort per-process checkpoint store. Use Redis/Postgres for multi-worker production.
 _THREAD_VARIABLE_STORE: Dict[str, Dict[str, Any]] = {}
 _THREAD_STATE_STORE: Dict[str, str] = {}
+_RUNTIME_SYSTEM_DATE: ContextVar[str] = ContextVar("runtime_system_date", default="")
 
 
 CONTEXT_SCHEMA: Dict[str, Any] = {
@@ -2475,6 +2486,7 @@ ITEM_SCHEMA: Dict[str, Any] = {
     "price": "",
     "part_type": "",
     "stock_status": "",
+    "updated_date": "",
     "other_brand_details": {
         "brand_name": "",
         "bike_model_name": "",
@@ -2519,6 +2531,19 @@ def _blank_current_items() -> Dict[str, Any]:
     return _safe_deepcopy(CURRENT_ITEMS_SCHEMA)
 
 
+def _current_runtime_date() -> str:
+    current = _RUNTIME_SYSTEM_DATE.get("")
+    if current:
+        return current
+    return datetime.now().astimezone().date().isoformat()
+
+
+def _stamp_item_updated_date(item: Dict[str, Any], current_date: Optional[str] = None) -> Dict[str, Any]:
+    stamped = _normalize_item(item)
+    stamped["updated_date"] = str(current_date or _current_runtime_date())
+    return stamped
+
+
 def _normalize_item(value: Any) -> Dict[str, Any]:
     normalized = _safe_deepcopy(ITEM_SCHEMA)
     if not isinstance(value, dict):
@@ -2526,7 +2551,7 @@ def _normalize_item(value: Any) -> Dict[str, Any]:
 
     direct_keys = {
         "part_name", "company", "model", "year", "quantity", "price",
-        "part_type", "stock_status",
+        "part_type", "stock_status", "updated_date",
     }
     aliases = {
         "partname": "part_name",
@@ -2812,6 +2837,9 @@ def _sync_context_items_with_totals(context: Dict[str, Any]) -> Dict[str, Any]:
     items = list(current_items.get("items", []))
     totals = dict(working.get("current_totals") or {}) if isinstance(working.get("current_totals"), dict) else {}
     if not items:
+        current_items["discount"] = ""
+        current_items["total_amount"] = ""
+        current_items["notes"] = ""
         working["current_items"] = current_items
         return working
 
@@ -2848,7 +2876,7 @@ def _normalize_selection_map(value: Any) -> Dict[str, Any]:
         for key, item in value.items():
             if isinstance(item, dict):
                 entry = {}
-                for entry_key in ("id", "type", "request_id", "quote_id", "order_id", "dealer_id", "mechanic_id", "label", "summary"):
+                for entry_key in ("id", "type", "request_id", "quote_id", "order_id", "dealer_id", "mechanic_id", "label", "summary", "prefix", "date"):
                     if item.get(entry_key) not in (None, ""):
                         entry[entry_key] = item[entry_key]
                 normalized[str(key)] = entry or item
@@ -2877,6 +2905,91 @@ def _normalize_selection_map(value: Any) -> Dict[str, Any]:
                 normalized[label] = {"id": item_id}
         return normalized
     return {}
+
+
+def _stamp_selection_entries(
+    selection_map: Any,
+    labels: Optional[List[str]] = None,
+    current_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    normalized = _normalize_selection_map(selection_map)
+    if not normalized:
+        return {}
+    stamp_date = str(current_date or _current_runtime_date())
+    target_labels = {str(label) for label in labels} if labels else set(normalized.keys())
+    for label, entry in normalized.items():
+        if label in target_labels and isinstance(entry, dict):
+            entry["date"] = stamp_date
+    return normalized
+
+
+def _stamp_current_items(current_items: Any, current_date: Optional[str] = None) -> Dict[str, Any]:
+    normalized = _normalize_current_items(current_items)
+    stamp_date = str(current_date or _current_runtime_date())
+    normalized["items"] = [
+        _stamp_item_updated_date(item, stamp_date)
+        for item in normalized.get("items", [])
+        if isinstance(item, dict)
+    ]
+    return normalized
+
+
+def _cleanup_context_for_current_date(context: Any, current_date: Optional[str] = None) -> Dict[str, Any]:
+    cleaned = _normalize_context(context)
+    today = str(current_date or _current_runtime_date())
+
+    selection_map = _normalize_selection_map(cleaned.get("current_selection_map"))
+    live_selection_map: Dict[str, Any] = {}
+    for label, entry in selection_map.items():
+        if isinstance(entry, dict) and str(entry.get("date") or "") == today:
+            live_selection_map[label] = entry
+    cleaned["current_selection_map"] = live_selection_map
+
+    current_items = _normalize_current_items(cleaned.get("current_items"))
+    live_items = [
+        _normalize_item(item)
+        for item in current_items.get("items", [])
+        if isinstance(item, dict) and str(item.get("updated_date") or "") == today
+    ]
+    current_items["items"] = live_items
+    if not live_items:
+        current_items["discount"] = ""
+        current_items["total_amount"] = ""
+        current_items["notes"] = ""
+        cleaned["current_totals"] = {}
+        cleaned["current_notes"] = ""
+    cleaned["current_items"] = current_items
+
+    referenced_ids = {
+        "current_request_id": {str(entry.get("request_id") or entry.get("id") or "") for entry in live_selection_map.values() if isinstance(entry, dict) and (entry.get("type") == "request" or entry.get("request_id"))},
+        "current_quote_id": {str(entry.get("quote_id") or entry.get("id") or "") for entry in live_selection_map.values() if isinstance(entry, dict) and (entry.get("type") == "quote" or entry.get("quote_id"))},
+        "current_order_id": {str(entry.get("order_id") or entry.get("id") or "") for entry in live_selection_map.values() if isinstance(entry, dict) and (entry.get("type") == "order" or entry.get("order_id"))},
+        "current_dealer_id": {str(entry.get("dealer_id") or "") for entry in live_selection_map.values() if isinstance(entry, dict) and entry.get("dealer_id")},
+        "current_mechanic_id": {str(entry.get("mechanic_id") or "") for entry in live_selection_map.values() if isinstance(entry, dict) and entry.get("mechanic_id")},
+    }
+    for context_key, valid_ids in referenced_ids.items():
+        current_value = str(cleaned.get(context_key) or "")
+        if current_value and valid_ids and current_value not in valid_ids:
+            cleaned[context_key] = ""
+
+    if not live_selection_map and not live_items:
+        for context_key in (
+            "current_request_id",
+            "current_quote_id",
+            "current_order_id",
+            "current_dealer_id",
+            "current_mechanic_id",
+            "current_flow",
+        ):
+            cleaned[context_key] = ""
+
+    return _sync_context_items_with_totals(cleaned)
+
+
+def _cleanup_variables_for_current_date(variables: Any, current_date: Optional[str] = None) -> Dict[str, Any]:
+    normalized = _normalize_variables(variables)
+    normalized["context"] = _cleanup_context_for_current_date(normalized.get("context"), current_date=current_date)
+    return _normalize_variables(normalized)
 
 
 def _normalize_context(value: Any) -> Dict[str, Any]:
@@ -2975,26 +3088,42 @@ def _normalize_variables_patch(value: Any) -> Dict[str, Any]:
 def _apply_variables_patch(current_variables: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
     working = _normalize_variables(current_variables if isinstance(current_variables, dict) else {})
     normalized_patch = _normalize_variables_patch(patch if isinstance(patch, dict) else {})
+    current_date = _current_runtime_date()
 
     incoming_context = normalized_patch.get("context") if isinstance(normalized_patch.get("context"), dict) else None
     if incoming_context is not None:
         working_context = working.setdefault("context", _blank_context())
         incoming_context_copy = _safe_deepcopy(incoming_context)
+        selection_labels_to_stamp: List[str] = []
+        items_touched = False
 
         if "current_items" in incoming_context_copy:
             working_context["current_items"] = _merge_current_items(
                 working_context.get("current_items", _blank_current_items()),
                 incoming_context_copy.get("current_items", _blank_current_items()),
             )
+            working_context["current_items"] = _stamp_current_items(working_context.get("current_items"), current_date=current_date)
+            items_touched = True
             incoming_context_copy.pop("current_items", None)
 
+        if isinstance(incoming_context_copy.get("current_selection_map"), dict):
+            selection_labels_to_stamp = [str(label) for label in incoming_context_copy.get("current_selection_map", {}).keys()]
+
         _deep_merge_values(working_context, incoming_context_copy)
+        if selection_labels_to_stamp:
+            working_context["current_selection_map"] = _stamp_selection_entries(
+                working_context.get("current_selection_map"),
+                labels=selection_labels_to_stamp,
+                current_date=current_date,
+            )
+        elif items_touched:
+            working_context["current_items"] = _stamp_current_items(working_context.get("current_items"), current_date=current_date)
         working["context"] = _sync_context_items_with_totals(working_context)
         normalized_patch = dict(normalized_patch)
         normalized_patch.pop("context", None)
 
     _deep_merge_values(working, normalized_patch)
-    return _normalize_variables(working)
+    return _cleanup_variables_for_current_date(working, current_date=current_date)
 
 
 def _extract_labeled_uuid(text: str, label: str) -> Optional[str]:
@@ -3460,6 +3589,7 @@ def _resolve_active_request_candidate(variables: Dict[str, Any], messages: List[
 
 def _reset_context_for_selected_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     fresh = _blank_context()
+    current_date = _current_runtime_date()
     candidate_type = str(candidate.get("type") or "").strip().lower()
     selected_id = str(candidate.get("id") or "").strip()
     selected_label = str(candidate.get("label") or candidate.get("prefix") or selected_id).strip()
@@ -3476,12 +3606,13 @@ def _reset_context_for_selected_candidate(candidate: Dict[str, Any]) -> Dict[str
                     "label": selected_label,
                     "summary": str(candidate.get("summary") or ""),
                     "prefix": str(candidate.get("prefix") or _uuid_prefix(request_id)).strip().upper(),
+                    "date": current_date,
                 }
             }
         if isinstance(candidate.get("items"), list) and candidate["items"]:
-            fresh["current_items"] = _normalize_current_items({
+            fresh["current_items"] = _stamp_current_items({
                 "items": [_normalize_item(item) for item in candidate["items"] if isinstance(item, dict)]
-            })
+            }, current_date=current_date)
         return _normalize_context(fresh)
 
     if candidate_type == "quote":
@@ -3498,6 +3629,7 @@ def _reset_context_for_selected_candidate(candidate: Dict[str, Any]) -> Dict[str
                 "label": selected_label,
                 "summary": str(candidate.get("summary") or ""),
                 "prefix": str(candidate.get("prefix") or _uuid_prefix(quote_id)).strip().upper(),
+                "date": current_date,
             }
             if request_id:
                 entry["request_id"] = request_id
@@ -3513,9 +3645,9 @@ def _reset_context_for_selected_candidate(candidate: Dict[str, Any]) -> Dict[str
         if mechanic_id:
             fresh["current_mechanic_id"] = mechanic_id
         if isinstance(candidate.get("items"), list) and candidate["items"]:
-            fresh["current_items"] = _normalize_current_items({
+            fresh["current_items"] = _stamp_current_items({
                 "items": [_normalize_item(item) for item in candidate["items"] if isinstance(item, dict)]
-            })
+            }, current_date=current_date)
         summary = _extract_financial_summary_from_preview(str(candidate.get("raw_text") or ""))
         if summary:
             fresh["current_totals"] = summary
@@ -3526,9 +3658,9 @@ def _reset_context_for_selected_candidate(candidate: Dict[str, Any]) -> Dict[str
                     "total_amount": str(summary.get("final_total") or ""),
                 },
             )
-        return _normalize_context(fresh)
+        return _cleanup_context_for_current_date(fresh, current_date=current_date)
 
-    return _normalize_context(fresh)
+    return _cleanup_context_for_current_date(fresh, current_date=current_date)
 
 
 def _context_lookup(variables: Dict[str, Any], key: str) -> Any:
@@ -4056,6 +4188,31 @@ def _strip_runtime_context_messages(messages: List[BaseMessage]) -> List[BaseMes
     return [message for message in (messages or []) if not _is_runtime_context_message(message)]
 
 
+def _trim_main_llm_history(messages: List[BaseMessage], max_ai: int = 5, max_human: int = 5) -> List[BaseMessage]:
+    clean = _strip_runtime_context_messages(messages)
+    ai_seen = 0
+    human_seen = 0
+    kept_indices: List[int] = []
+
+    for idx in range(len(clean) - 1, -1, -1):
+        message = clean[idx]
+        if isinstance(message, AIMessage):
+            if ai_seen >= max_ai:
+                continue
+            ai_seen += 1
+            kept_indices.append(idx)
+        elif isinstance(message, HumanMessage):
+            if human_seen >= max_human:
+                continue
+            human_seen += 1
+            kept_indices.append(idx)
+        else:
+            kept_indices.append(idx)
+
+    kept_set = set(kept_indices)
+    return [message for idx, message in enumerate(clean) if idx in kept_set]
+
+
 def _render_dealer_prompt(active_state: Optional[str] = None) -> str:
     state = _normalize_state_name(active_state, port=8002) or "menu"
     state_prompt = DEALER_STATES.get(state, DEALER_STATES["menu"])["prompt"].strip()
@@ -4433,6 +4590,8 @@ def run_agent(
     global _THREAD_VARIABLE_STORE, _THREAD_STATE_STORE
     active_config = get_active_agent_config()
     active_state = "menu"
+    current_system_date = datetime.now().astimezone().date().isoformat()
+    _RUNTIME_SYSTEM_DATE.set(current_system_date)
 
     # Prefer key from request body, fallback to env var
     resolved_api_key = api_key or OPENAI_API_KEY
@@ -4456,9 +4615,10 @@ def run_agent(
         initial_vars = _apply_variables_patch(initial_vars, dict(context_vars))
     if isinstance(variables, dict):
         initial_vars = _apply_variables_patch(initial_vars, variables)
-    initial_vars = _normalize_variables(initial_vars)
+    initial_vars = _cleanup_variables_for_current_date(initial_vars, current_date=current_system_date)
     request_state = {
         "thread_id": thread_id,
+        "system": {"current_date": current_system_date},
         "variables": _normalize_variables(initial_vars),
     }
     classifier_meta: Dict[str, Any] = {"messages": [], "system_prompt": "", "transcript": ""}
@@ -4466,8 +4626,14 @@ def run_agent(
 
     # Convert conversation to messages
     msgs = _to_messages(context, conversation_history, message)
-    request_state["variables"] = _hydrate_variables_from_messages(request_state["variables"], msgs)
-    request_state["variables"] = _resolve_prefixed_selection_from_messages(request_state["variables"], msgs)
+    request_state["variables"] = _cleanup_variables_for_current_date(
+        _hydrate_variables_from_messages(request_state["variables"], msgs),
+        current_date=current_system_date,
+    )
+    request_state["variables"] = _cleanup_variables_for_current_date(
+        _resolve_prefixed_selection_from_messages(request_state["variables"], msgs),
+        current_date=current_system_date,
+    )
 
     if PORT in (8001, 8002):
         current_state = _resolve_current_state(context, variables, thread_id=thread_id)
@@ -4512,13 +4678,13 @@ def run_agent(
         )
 
     runtime_context_msg = _build_runtime_context_message(_safe_deepcopy(request_state["variables"]))
-    if runtime_context_msg is not None:
-        msgs = [runtime_context_msg] + msgs
+    main_llm_history = _trim_main_llm_history(msgs)
+    main_llm_msgs = ([runtime_context_msg] if runtime_context_msg is not None else []) + main_llm_history
 
     try:
         state = agent.invoke(
             {
-                "messages": msgs,
+                "messages": main_llm_msgs,
             },
             config={
                 "recursion_limit": 25,
@@ -4531,7 +4697,7 @@ def run_agent(
             "output_tokens": 0,
         }
         try:
-            fallback_msgs = [SystemMessage(content=system_prompt)] + msgs
+            fallback_msgs = [SystemMessage(content=system_prompt)] + main_llm_msgs
             fallback_resp = llm.invoke(fallback_msgs)
             reply_text = fallback_resp.content if hasattr(fallback_resp, "content") else str(fallback_resp)
             fallback_token_usage = _extract_token_usage(fallback_resp)
@@ -4542,6 +4708,7 @@ def run_agent(
             _safe_deepcopy(request_state["variables"]),
             msgs + [AIMessage(content=reply_text)],
         )
+        fallback_vars = _cleanup_variables_for_current_date(fallback_vars, current_date=current_system_date)
         fallback_state = _normalize_state_name(fallback_vars.get("current_state")) or active_state
         reply_text, fallback_state = _guard_dealer_quote_reply(reply_text, fallback_vars, fallback_state)
         fallback_vars["current_state"] = fallback_state
@@ -4561,7 +4728,7 @@ def run_agent(
             full_system_prompt=system_prompt,
             classifier_system_prompt=str(classifier_meta.get("system_prompt") or ""),
             runtime_context_message=runtime_context_msg,
-            conversation_messages=_strip_runtime_context_messages(msgs),
+            conversation_messages=main_llm_history,
             classifier_messages=classifier_meta.get("messages") if isinstance(classifier_meta.get("messages"), list) else [],
             fallback_messages=fallback_msgs,
             actual_input_tokens=fallback_token_usage["input_tokens"] + classifier_usage.get("input_tokens", 0),
@@ -4581,6 +4748,7 @@ def run_agent(
             _safe_deepcopy(request_state["variables"]),
             msgs + [AIMessage(content=error_reply)],
         )
+        error_vars = _cleanup_variables_for_current_date(error_vars, current_date=current_system_date)
         error_state = _normalize_state_name(error_vars.get("current_state")) or active_state
         error_reply, error_state = _guard_dealer_quote_reply(error_reply, error_vars, error_state)
         error_vars["current_state"] = error_state
@@ -4600,7 +4768,7 @@ def run_agent(
             full_system_prompt=system_prompt,
             classifier_system_prompt=str(classifier_meta.get("system_prompt") or ""),
             runtime_context_message=runtime_context_msg,
-            conversation_messages=_strip_runtime_context_messages(msgs),
+            conversation_messages=main_llm_history,
             classifier_messages=classifier_meta.get("messages") if isinstance(classifier_meta.get("messages"), list) else [],
             actual_input_tokens=classifier_usage.get("input_tokens", 0),
             actual_output_tokens=classifier_usage.get("output_tokens", 0),
@@ -4645,6 +4813,7 @@ def run_agent(
     final_messages = out_msgs if isinstance(out_msgs, list) and out_msgs else msgs + [AIMessage(content=reply_text)]
     final_vars = _hydrate_variables_from_messages(final_vars, final_messages)
     final_vars = _resolve_prefixed_selection_from_messages(final_vars, final_messages)
+    final_vars = _cleanup_variables_for_current_date(final_vars, current_date=current_system_date)
     response_state = _normalize_state_name(final_vars.get("current_state")) or active_state
     reply_text, response_state = _guard_dealer_quote_reply(reply_text, final_vars, response_state)
     if isinstance(final_messages, list) and final_messages:
@@ -4669,7 +4838,7 @@ def run_agent(
         full_system_prompt=system_prompt,
         classifier_system_prompt=str(classifier_meta.get("system_prompt") or ""),
         runtime_context_message=runtime_context_msg,
-        conversation_messages=_strip_runtime_context_messages(msgs),
+        conversation_messages=main_llm_history,
         classifier_messages=classifier_meta.get("messages") if isinstance(classifier_meta.get("messages"), list) else [],
         actual_input_tokens=token_usage["input_tokens"] + classifier_usage.get("input_tokens", 0),
         actual_output_tokens=token_usage["output_tokens"] + classifier_usage.get("output_tokens", 0),
