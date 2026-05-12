@@ -88,7 +88,7 @@ Welcome to PartsWale! 🔧
 
 Hello {user_name}!
 
-What would you like to do?|Request a Part,All Quotes,Order History,Request History,Watch Tutorial""",
+What would you like to do?|Request a Part,All Quotes,Order History,My Requests,Watch Tutorial""",
     },
     "request_collection": {
         "description": (
@@ -200,19 +200,26 @@ If user clicks Confirm again:
 
 Your request has been sent to nearby dealers.
 
-You'll receive quotes shortly.|Request History""",
+You'll receive quotes shortly.|My Requests""",
     },
     "request_history": {
-        "description": "User asked to see past requests or request history.",
-        "prompt": r"""6. REQUEST HISTORY
+        "description": "User asked to see their active requests.",
+        "prompt": r"""6. MY REQUESTS
 
-If user asks for Request History or asks about their requests:
+If user asks for My Requests, Request History, or asks about their requests:
 
-If requests are available:
-List only real requests from available data.
+First call the fetch_my_active_requests tool using CURRENT AGENT VARIABLES mechanic_id.
 
-If requests are not available:
-I can't see your request history right now.|Exit""",
+If active requests are available:
+- List only real active requests from the tool response
+- Show one brief line per request with the visible 8-character request prefix, status, quotes count, and item summary
+- Before replying, save the real request-id mappings with visible prefixes into CURRENT AGENT VARIABLES.context.current_selection_map
+- Ask which request they want to see quotes of using buttons like:
+  Request 1 FD264944, Request 2 A91C220B, Main Menu
+- Do not fetch quotes until the user selects one request
+
+If no active requests are available:
+Abhi aapke koi active requests nahi dikh rahe.|Main Menu""",
     },
     "quote_viewing": {
         "description": "User wants to see quotes on a request or is selecting a request/quote.",
@@ -221,22 +228,12 @@ I can't see your request history right now.|Exit""",
 If user asks for quotes on a request:
 
 Do not ask the user for extra details first if mechanic_id is available in CURRENT AGENT VARIABLES.
-First fetch the user's real request history using the mechanic_id.
-If requests are available:
-- Always do this request-list step first before fetching quotes
-- Before replying with the list, save request options into CURRENT AGENT VARIABLES.context.current_selection_map
-- List the real requests in a brief human-readable way using this style:
-  Request 1 [{REQUEST_PREFIX}] - {brand} {bike_model} {year} - {items_summary}
-- `REQUEST_PREFIX` means the first 8 characters of the real request_id, preferably shown in uppercase, for example: FD264944
-- Do not show or ask for raw request_id in the user-facing message
-- Show simple human-friendly selection buttons only, for example:
-  Request 1 FD264944, Request 2 A91C220B, Request 3 77EF1012
-- Ask clearly which request they want to see all quotes for
-- Do not skip this selection step unless the user has already selected one specific request
-- Use CURRENT AGENT VARIABLES.context.current_selection_map plus the visible 8-character prefix to match which listed request the user is referring to
-- When the user selects one of the listed requests by its 8-character prefix, first clear every CURRENT AGENT VARIABLES.context key that starts with `current_`, then refill only the selected request's current_request_id, current_items, and any selected-request details from that same request message or matched request record
-- If the user's selection is ambiguous, reverse-search the visible prefix against previous request messages in chat and the saved selection map
-- If more than one request is still possible, ask one short clarification question using only the human-friendly request labels with prefixes, not raw request_id
+If one specific request has not already been selected, first call the fetch_my_active_requests tool using the mechanic_id and let the user choose a request by visible 8-character prefix.
+Before replying with the request list, save request options into CURRENT AGENT VARIABLES.context.current_selection_map.
+Use CURRENT AGENT VARIABLES.context.current_selection_map plus the visible 8-character prefix to match which listed request the user is referring to.
+When the user selects one of the listed requests by its 8-character prefix, first clear every CURRENT AGENT VARIABLES.context key that starts with `current_`, then refill only the selected request's current_request_id, current_items, and any selected-request details from that same request message or matched request record.
+If the user's selection is ambiguous, reverse-search the visible prefix against previous request messages in chat and the saved selection map.
+If more than one request is still possible, ask one short clarification question using only the human-friendly request labels with prefixes, not raw request_id.
 
 After the user selects a request:
 - Run the quotes tool using that selected request_id
@@ -265,7 +262,7 @@ After the user selects a request:
 - Tell the user they will be notified as soon as payment is successful and the order is created
 
 If no requests are available:
-I can't see your request history right now.|Exit
+I can't see your active requests right now.|Main Menu
 
 If quotes are not available:
 I can't see any quotes for your request yet.""",
@@ -536,7 +533,7 @@ You are a TASK EXECUTION SYSTEM. Not conversational. Not explanatory.
 - Treat current_selection_map and current_items as short-term working memory only. If the latest recent messages clearly show an in-progress request/quote/order flow but the required current_* selection or item memory for that flow is now missing or expired, do not pretend the flow can continue. Tell the user briefly that it expired and ask them to restart that exact flow from the correct entry point.
 - Use the restart guidance that matches the broken flow:
   request flow → ask them to create the request again from the start
-  quote selection flow → ask them to open Request History or All Quotes and select the real request/quote again
+  quote selection flow → ask them to open My Requests or All Quotes and select the real request/quote again
   order/acceptance flow → ask them to reopen the quote/order from the latest list and continue again
 
 ═══ OUTPUT FORMAT — MANDATORY ═══
@@ -608,16 +605,16 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
     "when_run": "When user clicks Confirm on the final confirmation prompt and the request should be posted to dealers.",
 },
     {
-    "name": "fetch_request_history",
-    "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/requests-history",
+    "name": "fetch_my_active_requests",
+    "api_url": "https://dnskvumoyqalsrbcyyjy.supabase.co/functions/v1/fetch-active-requests",
     "payload_template": {
-        "id": "",
+        "mechanic_id": "",
     },
     "instructions": (
-        "Use this tool to fetch the user's previous part requests. "
-        "The 'id' field is the mechanic_id from CURRENT AGENT VARIABLES. "
-        "Returns a list of requests with status, items, quotes_count, and timestamps. "
-        "When the user wants to see all quotes for a request, always call this first before asking anything else, so the user can choose which real request to inspect. "
+        "Use this tool to fetch the mechanic user's active requests. "
+        "The 'mechanic_id' field is the mechanic_id from CURRENT AGENT VARIABLES. "
+        "Returns a list of active requests with status, items, quotes_count, district, request_prefix, and timestamps. "
+        "When the user wants to see My Requests or choose one request to inspect quotes for, always call this first. "
         "List the requests briefly in a human-readable way and include a visible 8-character request-id prefix from the real request_id, for example FD264944. "
         "Provide simple human-friendly selection buttons like Request 1 FD264944, Request 2 A91C220B, Request 3 77EF1012. "
         "Do not show or ask for the raw request_id in the user-facing message. "
@@ -626,11 +623,11 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Show each request's items, status, and quotes count to the user. "
         "Do not invent or summarize data that is not in the response."
     ),
-    "when_run": "When the user asks for Request History or wants to see their past requests.",
+    "when_run": "When the user asks for My Requests / Request History or wants to choose one of their active requests.",
 },
     {
     "name": "fetch_request_quotes",
-    "api_url": "https://n8n.srv1469471.hstgr.cloud/webhook/see-quotes",
+    "api_url": "https://dnskvumoyqalsrbcyyjy.supabase.co/functions/v1/fetch-active-requests",
     "payload_template": {
         "request_id": "",
     },
@@ -639,7 +636,7 @@ PARTSWALE_STATIC_TOOLS: List[Dict[str, Any]] = [
         "Only call this after the user has selected one real request from their fetched request history. "
         "Get request_id from CURRENT AGENT VARIABLES.context.current_request_id if it was already saved there. "
         "Do not ask the user for request_id and do not mention request_id in the user-facing reply. "
-        "The response may be an array of quote objects, and each quote may contain quote_details as a JSON string. "
+        "This endpoint returns lookup_type=request_quotes and a quotes array. Each quote may contain quote_details as a JSON string or object. "
         "For each quote, show and save a visible 8-character quote-id prefix from the real quote_id, for example FD264944. "
         "Save quote selection options including the visible prefix into CURRENT AGENT VARIABLES.context.current_selection_map and selected/fetched quote items into CURRENT AGENT VARIABLES.context.current_items as needed. "
         "Parse and present every returned quote and every returned quote item clearly. "
@@ -1755,8 +1752,10 @@ Quote cancel kar diya. Agle requests aate rahenge.|Main Menu""",
 
 If dealer asks for Active Requests:
 
+First call the district active requests tool using CURRENT AGENT VARIABLES district and dealer_id.
+
 If active requests are available:
-List only real live requests in the dealer's district from available data.
+List only real live requests in the dealer's district from the tool response.
 Treat one multi-part request as ONE request, never as multiple separate requests.
 Do not split one request into separate rows just because it contains multiple parts.
 
@@ -1768,8 +1767,11 @@ For the request list view:
   - company / model / year if available
   - time since posted
 - Also show a visible request prefix using the first 8 characters of the real request_id, preferably uppercase
+- If the tool response includes `quoted? = true` for a request, clearly mark that request as already quoted by this dealer
 - Example style:
   `Request 1 [FD264944]: Chain Kit - Hero Splendor Plus 2022 (+ 2 more parts)`
+  or
+  `Request 1 [FD264944]: Chain Kit - Hero Splendor Plus 2022 (+ 2 more parts) - Already Quoted`
 
 Number each real request.
 Save the compact current request-selection map into CURRENT AGENT VARIABLES.context.current_selection_map before asking the dealer to choose.
@@ -1784,7 +1786,7 @@ When dealer selects a request:
 - In the detailed view, list ALL parts of that request with Part Name, Company, Model, Year, Qty
 - Do not collapse the detailed view
 - After showing full request details, ask:
-  `Is request par kya karna hai?|Send Quote FD264944,View All Quotes FD264944,Call FD264944,Main Menu`
+  `Is request par kya karna hai?|Send Quote FD264944,Call FD264944,Main Menu`
 
 If dealer taps Send Quote:
 - Use the already selected request from CURRENT AGENT VARIABLES.context.current_request_id and current_items
@@ -1795,15 +1797,6 @@ If dealer taps Call FD264944:
 - Call the resolve_chat_phone tool with that request_id
 - After success, return the mechanic's phone number and shop name in a short Hinglish reply
 - If contact details cannot be resolved, say so briefly and keep the selected request active
-
-If dealer taps View All Quotes:
-- Stay in active_requests state
-- Show all real quotes already available for that selected request, only if such quote data is available in conversation or available data
-- Never invent quotes
-- If no quotes are available for that request, say so clearly and briefly:
-  `Abhi is request par koi quotes available nahi hain.|Send Quote,Main Menu`
-- After showing quotes, keep the selected request active and offer:
-  `Is request par kya karna hai?|Send Quote,Main Menu`
 
 If no active requests:
 Abhi aapke area mein koi active request nahi hai. Jaise hi koi aayega, aapko notification milega.|Main Menu""",
@@ -2288,7 +2281,7 @@ DEALER_STATE_TOOLS: Dict[str, List[str]] = {
     "incoming_request": ["resolve_chat_phone"],
     "quote_flow": [],
     "quote_confirmation": ["submit_quote"],
-    "active_requests": ["resolve_chat_phone"],
+    "active_requests": ["fetch_district_active_requests", "resolve_chat_phone"],
     "order_received": [],
     "pickup_notification": [],
     "pickup_confirmation": ["dealer_pickup_confirm"],
@@ -2308,6 +2301,23 @@ DEALER_STATE_TOOLS: Dict[str, List[str]] = {
 
 
 SECOND_AGENT_STATIC_TOOLS: List[Dict[str, Any]] = [
+    {
+    "name": "fetch_district_active_requests",
+    "api_url": "https://dnskvumoyqalsrbcyyjy.supabase.co/functions/v1/fetch-active-requests",
+    "payload_template": {
+        "district": "",
+        "dealer_id": "",
+    },
+    "instructions": (
+        "Use this tool to fetch active requests for the dealer's district. "
+        "Get district and dealer_id from CURRENT AGENT VARIABLES. "
+        "The response returns active requests in the district and, when dealer_id is provided, may include `quoted?` for each request. "
+        "Show one brief line per real request with the visible 8-character request prefix, item summary, and whether this dealer already quoted it. "
+        "Save the real request-id mappings with visible prefixes into CURRENT AGENT VARIABLES.context.current_selection_map, and save the selected request into CURRENT AGENT VARIABLES.context.current_request_id only after the dealer chooses one specific request. "
+        "Do not show raw request_id in the user-facing reply."
+    ),
+    "when_run": "When dealer asks for Active Requests and the system should fetch the current district's real active requests.",
+},
     {
     "name": "resolve_chat_phone",
     "api_url": "https://dnskvumoyqalsrbcyyjy.supabase.co/functions/v1/resolve-chat-phone",
@@ -3754,8 +3764,11 @@ def _fill_payload_from_context(
         fill("id", context.get("current_dealer_id"))
     elif tool_name == "fetch_request_quotes":
         fill("request_id", context.get("current_request_id"))
-    elif tool_name == "fetch_request_history":
-        fill("id", current_variables.get("mechanic_id") or context.get("current_mechanic_id"))
+    elif tool_name == "fetch_my_active_requests":
+        fill("mechanic_id", current_variables.get("mechanic_id") or context.get("current_mechanic_id"))
+    elif tool_name == "fetch_district_active_requests":
+        fill("district", current_variables.get("district"))
+        fill("dealer_id", current_variables.get("dealer_id") or context.get("current_dealer_id"))
     else:
         for key in ("request_id", "quote_id", "order_id", "dealer_id", "mechanic_id", "district", "dealer_rating"):
             if key in payload and payload.get(key) in (None, ""):
@@ -3917,7 +3930,7 @@ def _log_tool_identity_check(
     current_vars: Dict[str, Any],
     payload: Dict[str, Any],
 ) -> None:
-    if tool_name not in {"create_part_request", "create_order", "fetch_request_history", "fetch_request_quotes", "submit_quote"}:
+    if tool_name not in {"create_part_request", "create_order", "fetch_my_active_requests", "fetch_district_active_requests", "fetch_request_quotes", "submit_quote"}:
         return
 
     context_variables = payload.get("context_variables") if isinstance(payload.get("context_variables"), dict) else {}
