@@ -19,6 +19,7 @@ from operator import ior
 
 import requests
 import asyncio
+import tiktoken
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -519,6 +520,9 @@ You are a TASK EXECUTION SYSTEM. Not conversational. Not explanatory.
 - Call manage_variables immediately when any future-use ID, selection data, or item data appears.
 - Before any tool call that needs an ID, confirm the matching current_* field exists first.
 - Never ask the user for raw IDs if those IDs are already visible in chat or tool results.
+- When the user replies to the question you just asked in the immediately previous assistant turn, first interpret that reply against that exact pending question, then update the matching CURRENT AGENT VARIABLES.context schema field before asking the next question or calling the next tool.
+- Do not wait for backend recovery. You must explicitly persist each newly learned value into the correct current_* field with manage_variables as soon as it is learned.
+- If the reply is ambiguous, invalid, off-topic, or does not cleanly answer the immediately previous pending question, do not write it into context. Ask one short corrective question instead.
 
 ═══ OUTPUT FORMAT — MANDATORY ═══
 ALWAYS format replies as:
@@ -530,6 +534,13 @@ ALWAYS format replies as:
 - Omit | entirely when there are no buttons.
 - Use exact button labels from the active state definition.
 - NEVER output JSON. NEVER explain system logic. NEVER mention tools.
+- Before finalizing any reply, silently self-check it once:
+  1. no duplicated body block
+  2. no duplicated button tail
+  3. no stray system/internal text like manage_variables, JSON, schema names, or tool names
+  4. body and buttons are in exactly one valid `body|button1,button2` shape when buttons exist
+  5. no malformed extra separators, repeated question blocks, or random leftover keywords
+- If the self-check fails, fix your own reply before sending it.
 
 ═══ TOOL RULES ═══
 - Do not claim success unless a tool result explicitly confirms it.
@@ -1428,6 +1439,9 @@ You are a TASK EXECUTION SYSTEM. Not conversational. Not explanatory.
 - CURRENT AGENT VARIABLES.current_state holds the persisted dealer state for this conversation.
 - Call manage_variables immediately when any future-use ID, selection data, or quote item data appears.
 - Before any tool call that needs an ID, confirm the matching current_* field exists first.
+- When the dealer replies to the question you just asked in the immediately previous assistant turn, first interpret that reply against that exact pending question, then update the matching CURRENT AGENT VARIABLES.context schema field before asking the next question or calling the next tool.
+- Do not wait for backend recovery. You must explicitly persist each newly learned price, part_type, stock_status, Other Brand detail, discount, note, or selected ID into the correct current_* schema field with manage_variables as soon as it is learned.
+- If the dealer reply is ambiguous, invalid, off-topic, or does not cleanly answer the immediately previous pending question, do not write it into context. Ask one short corrective question instead.
 
 ═══ OUTPUT FORMAT — MANDATORY ═══
 ALWAYS format replies as:
@@ -1439,6 +1453,13 @@ ALWAYS format replies as:
 - Omit | entirely when there are no buttons.
 - Use exact button labels from the active state definition.
 - NEVER output JSON. NEVER explain system logic. NEVER mention tools.
+- Before finalizing any reply, silently self-check it once:
+  1. no duplicated body block
+  2. no duplicated button tail
+  3. no stray system/internal text like manage_variables, JSON, schema names, or tool names
+  4. body and buttons are in exactly one valid `body|button1,button2` shape when buttons exist
+  5. no malformed extra separators, repeated question blocks, or random leftover keywords
+- If the self-check fails, fix your own reply before sending it.
 
 ═══ TOOL RULES ═══
 - Do not claim success unless a tool result explicitly confirms it.
@@ -1529,6 +1550,9 @@ As soon as the dealer gives price, part type, stock status, or Other Brand detai
 As soon as the dealer gives a whole-order discount, save it in current_items.discount and keep current_totals in sync.
 As soon as the dealer gives shared order notes, save them in current_items.notes.
 As soon as final order total is known, save it in current_items.total_amount.
+When the dealer replies to the immediately previous question in this quote flow, first write that answer into the correct current_items/current_totals field with manage_variables, then and only then ask the next question.
+Do not re-ask the same question if the dealer already answered it clearly. Persist the answer first, then continue.
+If the dealer reply is unclear or does not answer the previous pending field, do not write it into context and ask one short corrective retry question instead.
 When submit_quote is called, quote_details must be built as an object with order-level fields outside the items array: { discount_input, discount_amount, gross_total, final_total, items }.
 
 Collect quote details part-by-part.
@@ -4095,7 +4119,7 @@ def _classify_state_with_llm(
     messages: List[BaseMessage],
     api_key: str,
     current_state: str = "menu",
-) -> str:
+) -> Tuple[str, Dict[str, Any], Dict[str, int]]:
     """
     Use a cheap LLM call to classify the current conversation state.
     Falls back to the current state on failure.
@@ -4106,7 +4130,7 @@ def _classify_state_with_llm(
     precheck = _precheck_state(messages, normalized_current_state)
     if precheck:
         print(f"[STATE PRECHECK] → {precheck}")
-        return precheck
+        return precheck, {"messages": [], "system_prompt": _get_classifier_prompt(), "transcript": ""}, {"input_tokens": 0, "output_tokens": 0}
 
     recent = [
         message for message in _strip_runtime_context_messages(messages)
@@ -4114,7 +4138,7 @@ def _classify_state_with_llm(
     ][-5:]
 
     if not recent:
-        return normalized_current_state
+        return normalized_current_state, {"messages": [], "system_prompt": _get_classifier_prompt(), "transcript": ""}, {"input_tokens": 0, "output_tokens": 0}
 
     transcript_lines = [f"Current state: {normalized_current_state}", "", "Recent conversation:"]
     for message in recent:
@@ -4124,6 +4148,11 @@ def _classify_state_with_llm(
             transcript_lines.append(f"{role}: {content}")
 
     try:
+        classifier_system_prompt = _get_classifier_prompt()
+        classifier_messages = [
+            SystemMessage(content=classifier_system_prompt),
+            HumanMessage(content="\n".join(transcript_lines)),
+        ]
         classifier_llm = ChatOpenAI(
             api_key=api_key,
             base_url=OPENAI_BASE_URL,
@@ -4131,21 +4160,17 @@ def _classify_state_with_llm(
             temperature=0,
             max_tokens=10,
         )
-        response = classifier_llm.invoke(
-            [
-                SystemMessage(content=_get_classifier_prompt()),
-                HumanMessage(content="\n".join(transcript_lines)),
-            ]
-        )
+        response = classifier_llm.invoke(classifier_messages)
+        usage = _extract_token_usage(response)
         state = _safe_content_to_str(response.content).strip().lower()
         if state in registry:
             print(f"[STATE CLASSIFIER] current={normalized_current_state} -> {state}")
-            return state
+            return state, {"messages": classifier_messages, "system_prompt": classifier_system_prompt, "transcript": "\n".join(transcript_lines)}, usage
         print(f"[STATE CLASSIFIER] Unknown state '{state}', falling back to {normalized_current_state}")
-        return normalized_current_state
+        return normalized_current_state, {"messages": classifier_messages, "system_prompt": classifier_system_prompt, "transcript": "\n".join(transcript_lines)}, usage
     except Exception as e:
         print(f"[STATE CLASSIFIER ERROR] {e}, falling back to {normalized_current_state}")
-        return normalized_current_state
+        return normalized_current_state, {"messages": [], "system_prompt": _get_classifier_prompt(), "transcript": "\n".join(transcript_lines)}, {"input_tokens": 0, "output_tokens": 0}
 
 
 def _sanitize_reply_text(reply_text: str) -> str:
@@ -4270,6 +4295,98 @@ def _extract_token_usage(response_obj: Any) -> Dict[str, int]:
     }
 
 
+def _get_token_encoder(model: Optional[str] = None):
+    target_model = str(model or LLM_MODEL or "gpt-4.1")
+    try:
+        return tiktoken.encoding_for_model(target_model)
+    except Exception:
+        return tiktoken.get_encoding("cl100k_base")
+
+
+def _estimate_text_tokens(text: Any, model: Optional[str] = None) -> int:
+    content = _safe_content_to_str(text)
+    if not content:
+        return 0
+    encoder = _get_token_encoder(model)
+    try:
+        return len(encoder.encode(content))
+    except Exception:
+        return 0
+
+
+def _estimate_message_tokens(messages: List[BaseMessage], model: Optional[str] = None) -> int:
+    total = 0
+    for message in messages or []:
+        role = getattr(message, "type", message.__class__.__name__.replace("Message", "").lower())
+        name = getattr(message, "name", None)
+        total += _estimate_text_tokens(role, model) + 4
+        if name:
+            total += _estimate_text_tokens(name, model)
+        total += _estimate_text_tokens(getattr(message, "content", ""), model)
+    return total + (2 if messages else 0)
+
+
+def _build_token_breakdown(
+    *,
+    model: str,
+    universal_system_prompt: str = "",
+    state_system_prompt: str = "",
+    full_system_prompt: str = "",
+    classifier_system_prompt: str = "",
+    runtime_context_message: Optional[BaseMessage] = None,
+    conversation_messages: Optional[List[BaseMessage]] = None,
+    classifier_messages: Optional[List[BaseMessage]] = None,
+    fallback_messages: Optional[List[BaseMessage]] = None,
+    actual_input_tokens: Optional[int] = None,
+    actual_output_tokens: Optional[int] = None,
+) -> Dict[str, Any]:
+    conversation_messages = list(conversation_messages or [])
+    classifier_messages = list(classifier_messages or [])
+    fallback_messages = list(fallback_messages or [])
+
+    breakdown: Dict[str, Any] = {
+        "model": model,
+        "input": {
+            "main_llm": {
+                "universal_system_prompt_tokens": _estimate_text_tokens(universal_system_prompt, model),
+                "state_system_prompt_tokens": _estimate_text_tokens(state_system_prompt, model),
+                "full_system_prompt_tokens": _estimate_text_tokens(full_system_prompt, model),
+                "runtime_context_tokens": _estimate_text_tokens(getattr(runtime_context_message, "content", "") if runtime_context_message else "", model),
+                "conversation_history_tokens": _estimate_message_tokens(conversation_messages[:-1], model) if len(conversation_messages) > 1 else 0,
+                "current_user_message_tokens": _estimate_text_tokens(getattr(conversation_messages[-1], "content", "") if conversation_messages else "", model),
+            },
+            "classifier_llm": {
+                "classifier_system_prompt_tokens": _estimate_text_tokens(classifier_system_prompt, model),
+                "classifier_messages_tokens": _estimate_message_tokens(classifier_messages, model),
+            },
+            "fallback_llm": {
+                "full_system_prompt_tokens": _estimate_text_tokens(full_system_prompt, model),
+                "fallback_messages_tokens": _estimate_message_tokens(fallback_messages, model),
+            },
+        },
+        "output": {
+            "actual_output_tokens": int(actual_output_tokens or 0),
+        },
+    }
+
+    breakdown["input"]["main_llm"]["estimated_total_tokens"] = sum(
+        int(v) for k, v in breakdown["input"]["main_llm"].items() if k.endswith("_tokens")
+    )
+    breakdown["input"]["classifier_llm"]["estimated_total_tokens"] = sum(
+        int(v) for k, v in breakdown["input"]["classifier_llm"].items() if k.endswith("_tokens")
+    )
+    breakdown["input"]["fallback_llm"]["estimated_total_tokens"] = sum(
+        int(v) for k, v in breakdown["input"]["fallback_llm"].items() if k.endswith("_tokens")
+    )
+    breakdown["input"]["estimated_total_tokens"] = (
+        breakdown["input"]["main_llm"]["estimated_total_tokens"]
+        + breakdown["input"]["classifier_llm"]["estimated_total_tokens"]
+        + breakdown["input"]["fallback_llm"]["estimated_total_tokens"]
+    )
+    breakdown["input"]["actual_total_tokens"] = int(actual_input_tokens or 0)
+    return breakdown
+
+
 def _resolve_api_key(body: Dict[str, Any], context: Optional[Dict[str, Any]]) -> Optional[str]:
     if isinstance(body.get("groq_api_key"), str) and body.get("groq_api_key"):
         return body.get("groq_api_key")
@@ -4344,6 +4461,8 @@ def run_agent(
         "thread_id": thread_id,
         "variables": _normalize_variables(initial_vars),
     }
+    classifier_meta: Dict[str, Any] = {"messages": [], "system_prompt": "", "transcript": ""}
+    classifier_usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
 
     # Convert conversation to messages
     msgs = _to_messages(context, conversation_history, message)
@@ -4352,7 +4471,7 @@ def run_agent(
 
     if PORT in (8001, 8002):
         current_state = _resolve_current_state(context, variables, thread_id=thread_id)
-        active_state = _classify_state_with_llm(msgs, resolved_api_key, current_state=current_state)
+        active_state, classifier_meta, classifier_usage = _classify_state_with_llm(msgs, resolved_api_key, current_state=current_state)
     request_state["variables"]["current_state"] = active_state
     _THREAD_STATE_STORE[thread_id] = active_state
 
@@ -4369,6 +4488,14 @@ def run_agent(
 
     # Build agent
     system_prompt = _render_system_prompt(active_state)
+    universal_system_prompt = DEALER_CORE_PROMPT if PORT == 8002 else PARTSWALE_CORE_PROMPT if PORT == 8001 else active_config["system_prompt"]
+    state_system_prompt = ""
+    if PORT == 8001:
+        state_system_prompt = PARTSWALE_STATES.get(_normalize_state_name(active_state, port=8001) or "menu", PARTSWALE_STATES["menu"])["prompt"].strip()
+    elif PORT == 8002:
+        dealer_state = _normalize_state_name(active_state, port=8002) or "menu"
+        state_prompt = DEALER_STATES.get(dealer_state, DEALER_STATES["menu"])["prompt"].strip()
+        state_system_prompt = state_prompt + "\n\n" + DEALER_TRANSITION_MAP.strip()
 
     # Compatible with both old (state_modifier) and new (prompt) langgraph versions
     try:
@@ -4427,12 +4554,26 @@ def run_agent(
         )
         _THREAD_VARIABLE_STORE[thread_id] = _safe_deepcopy(fallback_vars)
         _THREAD_STATE_STORE[thread_id] = fallback_state
+        token_breakdown = _build_token_breakdown(
+            model=LLM_MODEL,
+            universal_system_prompt=universal_system_prompt,
+            state_system_prompt=state_system_prompt,
+            full_system_prompt=system_prompt,
+            classifier_system_prompt=str(classifier_meta.get("system_prompt") or ""),
+            runtime_context_message=runtime_context_msg,
+            conversation_messages=_strip_runtime_context_messages(msgs),
+            classifier_messages=classifier_meta.get("messages") if isinstance(classifier_meta.get("messages"), list) else [],
+            fallback_messages=fallback_msgs,
+            actual_input_tokens=fallback_token_usage["input_tokens"] + classifier_usage.get("input_tokens", 0),
+            actual_output_tokens=fallback_token_usage["output_tokens"] + classifier_usage.get("output_tokens", 0),
+        )
         return {
             "reply": reply_text,
             "context": fallback_context,
             "state": fallback_state,
             "input_tokens": fallback_token_usage["input_tokens"],
             "output_tokens": fallback_token_usage["output_tokens"],
+            "tokens": token_breakdown,
         }
     except Exception as e:
         error_reply = _sanitize_reply_text(f"Error: {str(e)}")
@@ -4452,12 +4593,25 @@ def run_agent(
         )
         _THREAD_VARIABLE_STORE[thread_id] = _safe_deepcopy(error_vars)
         _THREAD_STATE_STORE[thread_id] = error_state
+        token_breakdown = _build_token_breakdown(
+            model=LLM_MODEL,
+            universal_system_prompt=universal_system_prompt,
+            state_system_prompt=state_system_prompt,
+            full_system_prompt=system_prompt,
+            classifier_system_prompt=str(classifier_meta.get("system_prompt") or ""),
+            runtime_context_message=runtime_context_msg,
+            conversation_messages=_strip_runtime_context_messages(msgs),
+            classifier_messages=classifier_meta.get("messages") if isinstance(classifier_meta.get("messages"), list) else [],
+            actual_input_tokens=classifier_usage.get("input_tokens", 0),
+            actual_output_tokens=classifier_usage.get("output_tokens", 0),
+        )
         return {
             "reply": error_reply,
             "context": error_context,
             "state": error_state,
             "input_tokens": 0,
             "output_tokens": 0,
+            "tokens": token_breakdown,
         }
 
     # Extract last AI message
@@ -4490,6 +4644,7 @@ def run_agent(
 
     final_messages = out_msgs if isinstance(out_msgs, list) and out_msgs else msgs + [AIMessage(content=reply_text)]
     final_vars = _hydrate_variables_from_messages(final_vars, final_messages)
+    final_vars = _resolve_prefixed_selection_from_messages(final_vars, final_messages)
     response_state = _normalize_state_name(final_vars.get("current_state")) or active_state
     reply_text, response_state = _guard_dealer_quote_reply(reply_text, final_vars, response_state)
     if isinstance(final_messages, list) and final_messages:
@@ -4507,6 +4662,18 @@ def run_agent(
     )
     _THREAD_VARIABLE_STORE[thread_id] = _safe_deepcopy(final_vars)
     _THREAD_STATE_STORE[thread_id] = response_state
+    token_breakdown = _build_token_breakdown(
+        model=LLM_MODEL,
+        universal_system_prompt=universal_system_prompt,
+        state_system_prompt=state_system_prompt,
+        full_system_prompt=system_prompt,
+        classifier_system_prompt=str(classifier_meta.get("system_prompt") or ""),
+        runtime_context_message=runtime_context_msg,
+        conversation_messages=_strip_runtime_context_messages(msgs),
+        classifier_messages=classifier_meta.get("messages") if isinstance(classifier_meta.get("messages"), list) else [],
+        actual_input_tokens=token_usage["input_tokens"] + classifier_usage.get("input_tokens", 0),
+        actual_output_tokens=token_usage["output_tokens"] + classifier_usage.get("output_tokens", 0),
+    )
 
     return {
         "reply": reply_text,
@@ -4514,6 +4681,7 @@ def run_agent(
         "state": response_state,
         "input_tokens": token_usage["input_tokens"],
         "output_tokens": token_usage["output_tokens"],
+        "tokens": token_breakdown,
     }
 
 
